@@ -1,18 +1,16 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using EHR.Modules;
+using EHR.Patches;
 using UnityEngine;
 
 namespace EHR;
 
 public abstract class OptionItem
 {
-    public const int NumPresets = 10;
-    private const int PresetId = 0;
+    public const int NumPresets = 20;
+    public const int PresetId = 0;
     public readonly List<OptionItem> Children;
-
-    private Dictionary<string, string> _replacementDictionary;
 
     public OptionBehaviour OptionBehaviour;
 
@@ -39,25 +37,17 @@ public abstract class OptionItem
             CurrentPreset = SingleValue;
         }
         else if (IsSingleValue)
-        {
             SingleValue = DefaultValue;
-        }
         else
         {
-            for (int i = 0; i < NumPresets; i++)
-            {
+            for (var i = 0; i < NumPresets; i++)
                 AllValues[i] = DefaultValue;
-            }
         }
 
         if (FastOpts.TryAdd(id, this))
-        {
             Options.Add(this);
-        }
         else
-        {
             Logger.Error($"Duplicate ID: {id} ({name})", "OptionItem");
-        }
     }
 
     public int Id { get; }
@@ -66,20 +56,25 @@ public abstract class OptionItem
     public TabGroup Tab { get; }
     public bool IsSingleValue { get; }
 
-    private Color NameColor { get; set; }
+    public Color NameColor { get; set; }
     private OptionFormat ValueFormat { get; set; }
     public CustomGameMode GameMode { get; private set; }
     public bool IsHeader { get; protected set; }
     private bool IsHidden { get; set; }
     public bool IsText { get; protected set; }
 
+    public TextOptionItem Header { get; set; }
+    public BaseGameSetting CachedSetting { get; set; }
+
     public Dictionary<string, string> ReplacementDictionary
     {
-        get => _replacementDictionary;
+        get;
         set
         {
-            if (value == null) _replacementDictionary?.Clear();
-            else _replacementDictionary = value;
+            if (value == null)
+                field?.Clear();
+            else
+                field = value;
         }
     }
 
@@ -95,7 +90,8 @@ public abstract class OptionItem
 
     public OptionItem Parent { get; private set; }
 
-    public event EventHandler<UpdateValueEventArgs> UpdateValueEvent;
+    public List<Action<OptionItem, int, int>> UpdateValueEvent;
+    public bool UpdateValueEventRunsOnLoad { get; private set; }
 
     // Setter
     private OptionItem Do(Action<OptionItem> action)
@@ -104,90 +100,159 @@ public abstract class OptionItem
         return this;
     }
 
-    public OptionItem SetColor(Color value) => Do(i => i.NameColor = value);
-    public OptionItem SetValueFormat(OptionFormat value) => Do(i => i.ValueFormat = value);
-    public OptionItem SetGameMode(CustomGameMode value) => Do(i => i.GameMode = value);
-    public OptionItem SetHeader(bool value) => Do(i => i.IsHeader = value);
-    public OptionItem SetHidden(bool value) => Do(i => i.IsHidden = value);
-    public OptionItem SetText(bool value) => Do(i => i.IsText = value);
-
-    public OptionItem SetParent(OptionItem parent) => Do(i =>
+    public OptionItem SetColor(Color value)
     {
-        foreach (var role in EHR.Options.CustomRoleSpawnChances)
+        return Do(i => i.NameColor = value);
+    }
+
+    public OptionItem SetValueFormat(OptionFormat value)
+    {
+        return Do(i => i.ValueFormat = value);
+    }
+
+    public OptionItem SetGameMode(CustomGameMode value)
+    {
+        return Do(i => i.GameMode = value);
+    }
+
+    public OptionItem SetHeader(bool value)
+    {
+        return Do(i => i.IsHeader = value);
+    }
+
+    public OptionItem SetHidden(bool value)
+    {
+        return Do(i => i.IsHidden = value);
+    }
+
+    public OptionItem SetText(bool value)
+    {
+        return Do(i => i.IsText = value);
+    }
+
+    public OptionItem SetParent(OptionItem parent)
+    {
+        return Do(i =>
         {
-            if (role.Value.Name == parent.Name)
+            foreach (KeyValuePair<CustomRoles, StringOptionItem> role in EHR.Options.CustomRoleSpawnChances)
             {
-                var roleName = Translator.GetString(Enum.GetName(typeof(CustomRoles), role.Key));
-                ReplacementDictionary ??= [];
-                ReplacementDictionary.TryAdd(roleName, Utils.ColorString(Utils.GetRoleColor(role.Key), roleName));
-                break;
+                if (role.Value.Name == parent.Name)
+                {
+                    string roleName = Translator.GetString(Enum.GetName(typeof(CustomRoles), role.Key));
+                    ReplacementDictionary ??= [];
+                    ReplacementDictionary.TryAdd(roleName, Utils.ColorString(Utils.GetRoleColor(role.Key), roleName));
+                    break;
+                }
             }
-        }
 
-        i.Parent = parent;
-        parent.SetChild(i);
-    });
+            i.Parent = parent;
+            parent.SetChild(i);
+        });
+    }
 
-    private OptionItem SetChild(OptionItem child) => Do(i => i.Children.Add(child));
+    private void SetChild(OptionItem child)
+    {
+        Do(i => i.Children.Add(child));
+    }
 
-    public OptionItem RegisterUpdateValueEvent(EventHandler<UpdateValueEventArgs> handler)
-        => Do(_ => UpdateValueEvent += handler);
+    /// <summary>
+    ///     Register an event that will be called when the value of this option is updated.
+    /// </summary>
+    /// <param name="handler">
+    ///     The action that has three parameters:
+    ///     the first argument is the OptionItem instance that was updated,
+    ///     the second one is the value before the update,
+    ///     the third one is the value after the update.
+    /// </param>
+    /// <returns></returns>
+    public OptionItem RegisterUpdateValueEvent(Action<OptionItem, int, int> handler)
+    {
+        UpdateValueEvent ??= [];
+        return Do(_ => UpdateValueEvent.Add(handler));
+    }
+
+    public OptionItem SetRunEventOnLoad(bool value)
+    {
+        return Do(_ => UpdateValueEventRunsOnLoad = value);
+    }
 
     public OptionItem AddReplacement((string key, string value) kvp)
-        => Do(_ =>
+    {
+        return Do(_ =>
         {
             ReplacementDictionary ??= [];
             ReplacementDictionary.Add(kvp.key, kvp.value);
         });
+    }
 
     public OptionItem RemoveReplacement(string key)
-        => Do(_ => ReplacementDictionary?.Remove(key));
+    {
+        return Do(_ => ReplacementDictionary?.Remove(key));
+    }
 
     // Getter
-    public virtual string GetName(bool disableColor = false, bool console = false)
+    public string GetName(bool disableColor = false, bool console = false)
     {
-        if (Name.Contains("CTA.FLAG"))
-        {
-            return Utils.ColorString(NameColor, Translator.GetString("CTA.TeamEnabled.Prefix") + Name[8..] + Translator.GetString("CTA.TeamEnabled.Suffix"));
-        }
-
+        if (Name.Contains("CTA.FLAG")) return Utils.ColorString(NameColor, Translator.GetString("CTA.TeamEnabled.Prefix") + Name[8..] + Translator.GetString("CTA.TeamEnabled.Suffix"));
         return disableColor ? Translator.GetString(Name, ReplacementDictionary, console) : Utils.ColorString(NameColor, Translator.GetString(Name, ReplacementDictionary));
     }
 
-    public virtual bool GetBool() => (Parent == null || Parent.GetBool()) && Name switch
+    public bool GetBool()
     {
-        "LoverDieConsequence" => GetValue() == 1,
-        "Bargainer.LensOfTruth.DurationSwitch" => GetValue() == 3,
-        "BlackHoleDespawnMode" => GetValue() == 1,
-        _ => CurrentValue != 0
-    };
+        return (Parent == null || Parent.GetBool()) && Name switch
+        {
+            "LoverDieConsequence" => GetValue() == 1,
+            "Bargainer.LensOfTruth.DurationSwitch" => GetValue() == 3,
+            "BlackHoleDespawnMode" => GetValue() == 1,
+            "CTF_TaggedPlayersGet" => GetValue() == 2,
+            "CTF_GameEndCriteria" => true,
+            _ => CurrentValue != 0
+        };
+    }
 
-    public virtual int GetInt() => CurrentValue;
-    public virtual float GetFloat() => CurrentValue;
+    public virtual int GetInt()
+    {
+        return CurrentValue;
+    }
+
+    public virtual float GetFloat()
+    {
+        return CurrentValue;
+    }
 
     public virtual string GetString()
     {
         return ApplyFormat(CurrentValue.ToString());
     }
 
-    public virtual int GetValue() => IsSingleValue ? SingleValue : AllValues[CurrentPreset];
-
-    public virtual bool IsHiddenOn(CustomGameMode mode)
+    public virtual int GetValue()
     {
-        return CheckHidden() || (GameMode != CustomGameMode.All && GameMode != mode);
+        return IsSingleValue ? SingleValue : AllValues[CurrentPreset];
     }
 
-    private bool CheckHidden()
+    public bool IsCurrentlyHidden(bool forLobbyView = false, bool checkCollapsedSection = true)
     {
-        var LastParent = this.Id;
-
-        for (var i = 0; i < 5; i++)
+        try
         {
-            if (AllOptions.First(x => x.Id == LastParent).Parent == null) break;
-            LastParent = AllOptions.First(x => x.Id == LastParent).Parent.Id;
+            for (OptionItem current = this; current != null; current = current.Parent)
+            {
+                if (Hidden(current, forLobbyView, checkCollapsedSection))
+                    return true;
+            }
         }
+        catch (Exception e) { Utils.ThrowException(e); }
 
-        return this.IsHidden || this.Parent?.IsHidden == true || AllOptions.First(x => x.Id == LastParent).IsHidden;
+        return false;
+
+        static bool Hidden(OptionItem oi, bool forLobbyView, bool checkCollapsedSection)
+        {
+            if (checkCollapsedSection && oi.Header is { CollapsesSection: true }) return true;
+            CustomGameMode mode = !forLobbyView ? EHR.Options.CurrentGameMode : LobbyViewSettingsPanePatch.LastGameModeSelected;
+            const CustomGameMode nd = CustomGameMode.NaturalDisasters;
+            return (oi.IsHidden || (oi.GameMode != CustomGameMode.All && oi.GameMode != mode) ||
+                    (oi.Name == "IntegrateNaturalDisasters" && mode == nd)) &&
+                   !(oi.GameMode == nd && EHR.Options.IntegrateNaturalDisasters.GetBool());
+        }
     }
 
     protected string ApplyFormat(string value)
@@ -196,7 +261,7 @@ public abstract class OptionItem
         return string.Format(Translator.GetString("Format." + ValueFormat), value);
     }
 
-    protected virtual void Refresh()
+    private void Refresh()
     {
         if (OptionBehaviour is StringOption opt)
         {
@@ -209,26 +274,16 @@ public abstract class OptionItem
     public void SetValue(int afterValue, bool doSave, bool doSync = true)
     {
         int beforeValue = CurrentValue;
+
         if (IsSingleValue)
-        {
             SingleValue = afterValue;
-        }
         else
-        {
             AllValues[CurrentPreset] = afterValue;
-        }
 
         CallUpdateValueEvent(beforeValue, afterValue);
         Refresh();
-        if (doSync)
-        {
-            SyncAllOptions();
-        }
-
-        if (doSave)
-        {
-            OptionSaver.Save();
-        }
+        if (doSync) SyncAllOptions();
+        if (doSave) OptionSaver.Save();
     }
 
     public virtual void SetValue(int afterValue, bool doSync = true)
@@ -238,30 +293,31 @@ public abstract class OptionItem
 
     public void SetAllValues(int[] values)
     {
-        if (values.Length == AllValues.Length) AllValues = values;
+        if (values.Length == AllValues.Length)
+            AllValues = values;
         else
         {
-            for (int i = 0; i < values.Length; i++)
-            {
+            for (var i = 0; i < values.Length; i++)
                 AllValues[i] = values[i];
-            }
         }
     }
 
     public static OptionItem operator ++(OptionItem item)
-        => item.Do(item => item.SetValue(item.CurrentValue + 1));
+    {
+        return item.Do(optionItem => optionItem.SetValue(optionItem.CurrentValue + 1));
+    }
 
     public static OptionItem operator --(OptionItem item)
-        => item.Do(item => item.SetValue(item.CurrentValue - 1));
+    {
+        return item.Do(optionItem => optionItem.SetValue(optionItem.CurrentValue - 1));
+    }
 
     protected static void SwitchPreset(int newPreset)
     {
         CurrentPreset = Math.Clamp(newPreset, 0, NumPresets - 1);
 
         foreach (OptionItem op in AllOptions)
-        {
             op.Refresh();
-        }
 
         SyncAllOptions();
     }
@@ -269,34 +325,26 @@ public abstract class OptionItem
     public static void SyncAllOptions(int targetId = -1)
     {
         if (
-            Main.AllPlayerControls.Length <= 1
-            || AmongUsClient.Instance.AmHost == false
-            || PlayerControl.LocalPlayer == null
-        ) return;
+                PlayerControl.AllPlayerControls.Count <= 1
+                || !AmongUsClient.Instance.AmHost
+                || !PlayerControl.LocalPlayer
+            )
+            return;
 
         RPC.SyncCustomSettingsRPC(targetId);
     }
-
-
-    // EventArgs
-    private void CallUpdateValueEvent(int beforeValue, int currentValue)
+    
+    public void CallUpdateValueEvent(int beforeValue, int currentValue)
     {
-        if (UpdateValueEvent == null) return;
-        try
+        UpdateValueEvent?.ForEach(action =>
         {
-            UpdateValueEvent(this, new(beforeValue, currentValue));
-        }
-        catch (Exception ex)
-        {
-            Logger.Error($"[{Name}] - Exception occurred when calling UpdateValueEvent", "OptionItem.UpdateValueEvent");
-            Logger.Exception(ex, "OptionItem.UpdateValueEvent");
-        }
-    }
-
-    public class UpdateValueEventArgs(int beforeValue, int currentValue) : EventArgs
-    {
-        public int CurrentValue { get; set; } = currentValue;
-        public int BeforeValue { get; set; } = beforeValue;
+            try { action(this, beforeValue, currentValue); }
+            catch (Exception ex)
+            {
+                Logger.Error($"[{Name}] - Exception occurred when calling UpdateValueEvent", "OptionItem.UpdateValueEvent");
+                Logger.Exception(ex, "OptionItem.UpdateValueEvent");
+            }
+        });
     }
 
     #region static
@@ -305,7 +353,7 @@ public abstract class OptionItem
     private static readonly List<OptionItem> Options = new(1024);
     public static IReadOnlyDictionary<int, OptionItem> FastOptions => FastOpts;
     private static readonly Dictionary<int, OptionItem> FastOpts = new(1024);
-    public static int CurrentPreset { get; set; }
+    public static int CurrentPreset { get; private set; }
 
     #endregion
 }
@@ -318,8 +366,10 @@ public enum TabGroup
     ImpostorRoles,
     CrewmateRoles,
     NeutralRoles,
+    CovenRoles,
     Addons,
-    OtherRoles
+    OtherRoles,
+    PresetExplorer
 }
 
 public enum OptionFormat
@@ -335,3 +385,4 @@ public enum OptionFormat
     Health,
     Level
 }
+

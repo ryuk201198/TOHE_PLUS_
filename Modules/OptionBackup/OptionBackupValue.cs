@@ -27,7 +27,7 @@ public class BoolOptionBackupValue(BoolOptionNames name, bool value) : OptionBac
 {
     public override void Restore(IGameOptions option)
     {
-        if (OptionName != BoolOptionNames.GhostsDoTasks)
+        if (OptionName is not BoolOptionNames.GhostsDoTasks and not BoolOptionNames.Roles)
             option.SetBool(OptionName, Value);
     }
 }
@@ -58,9 +58,9 @@ public class UIntOptionBackupValue(UInt32OptionNames name, uint value) : OptionB
 
 public class RoleRateBackupValue(RoleTypes type, int maxCount, int chance) : OptionBackupValue
 {
-    public RoleTypes roleType = type;
-    public int maxCount = maxCount;
     public int chance = chance;
+    public int maxCount = maxCount;
+    public RoleTypes roleType = type;
 
     public override void Restore(IGameOptions option)
     {

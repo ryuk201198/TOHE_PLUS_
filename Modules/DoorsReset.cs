@@ -9,35 +9,32 @@ public static class DoorsReset
         RandomByDoor
     }
 
-    private static bool isEnabled;
-    private static ResetMode mode;
-    private static DoorsSystemType DoorsSystem => ShipStatus.Instance.Systems.TryGetValue(SystemTypes.Doors, out var system) ? system.TryCast<DoorsSystemType>() : null;
+    private static bool IsEnabled;
+    private static ResetMode Mode;
+    private static DoorsSystemType DoorsSystem => ShipStatus.Instance.Systems.TryGetValue(SystemTypes.Doors, out ISystemType system) ? system.CastFast<DoorsSystemType>() : null;
 
     public static void Initialize()
     {
         // Not supported except for Airship, Polus and Fungle
-        if ((MapNames)Main.NormalOptions.MapId is not (MapNames.Airship or MapNames.Polus or MapNames.Fungle))
+        if (Main.CurrentMap is not (MapNames.Airship or MapNames.Polus or MapNames.Fungle) && !(SubmergedCompatibility.Loaded && Main.NormalOptions.MapId == 6))
         {
-            isEnabled = false;
+            IsEnabled = false;
             return;
         }
 
-        isEnabled = Options.ResetDoorsEveryTurns.GetBool();
-        mode = (ResetMode)Options.DoorsResetMode.GetValue();
-        Logger.Info($"Initalization: [ {isEnabled}, {mode} ]", "DoorsReset");
+        IsEnabled = Options.ResetDoorsEveryTurns.GetBool();
+        Mode = (ResetMode)Options.DoorsResetMode.GetValue();
+        Logger.Info($"Initalization: [ {IsEnabled}, {Mode} ]", "DoorsReset");
     }
 
     /// <summary>Reset door status according to settings</summary>
     public static void ResetDoors()
     {
-        if (!isEnabled || DoorsSystem == null)
-        {
-            return;
-        }
+        if (!IsEnabled || DoorsSystem == null) return;
 
         Logger.Info("Reset Completed", "DoorsReset");
 
-        switch (mode)
+        switch (Mode)
         {
             case ResetMode.AllOpen:
                 OpenAllDoors();
@@ -49,7 +46,7 @@ public static class DoorsReset
                 OpenOrCloseAllDoorsRandomly();
                 break;
             default:
-                Logger.Warn($"Invalid Reset Doors Mode: {mode}", "DoorsReset");
+                Logger.Warn($"Invalid Reset Doors Mode: {Mode}", "DoorsReset");
                 break;
         }
     }
@@ -57,37 +54,47 @@ public static class DoorsReset
     /// <summary>Open all doors on the map</summary>
     public static void OpenAllDoors()
     {
-        foreach (var door in ShipStatus.Instance.AllDoors)
+        if (!ShipStatus.Instance) return;
+
+        foreach (OpenableDoor door in ShipStatus.Instance.AllDoors)
         {
             if (door == null) continue;
             SetDoorOpenState(door, true);
         }
 
-        DoorsSystem.IsDirty = true;
+        DoorsSystemType doorsSystem = DoorsSystem;
+        doorsSystem?.IsDirty = true;
     }
 
     /// <summary>Close all doors on the map</summary>
     public static void CloseAllDoors()
     {
-        foreach (var door in ShipStatus.Instance.AllDoors)
+        if (!ShipStatus.Instance) return;
+
+        foreach (OpenableDoor door in ShipStatus.Instance.AllDoors)
         {
             if (door == null) continue;
+
             SetDoorOpenState(door, false);
         }
 
-        DoorsSystem.IsDirty = true;
+        DoorsSystemType doorsSystem = DoorsSystem;
+        doorsSystem?.IsDirty = true;
     }
 
     /// <summary>Randomly opens and closes all doors on the map</summary>
     public static void OpenOrCloseAllDoorsRandomly()
     {
-        foreach (var door in ShipStatus.Instance.AllDoors)
+        if (!ShipStatus.Instance) return;
+
+        foreach (OpenableDoor door in ShipStatus.Instance.AllDoors)
         {
-            var isOpen = IRandom.Instance.Next(2) > 0;
+            bool isOpen = IRandom.Instance.Next(2) > 0;
             SetDoorOpenState(door, isOpen);
         }
 
-        DoorsSystem.IsDirty = true;
+        DoorsSystemType doorsSystem = DoorsSystem;
+        doorsSystem?.IsDirty = true;
     }
 
     /// <summary>Sets the open/close status of the door. Do nothing for doors that cannot be closed by sabotage</summary>
@@ -95,10 +102,7 @@ public static class DoorsReset
     /// <param name="isOpen">true for open, false for close</param>
     private static void SetDoorOpenState(OpenableDoor door, bool isOpen)
     {
-        if (IsValidDoor(door))
-        {
-            door.SetDoorway(isOpen);
-        }
+        if (IsValidDoor(door)) door.SetDoorway(isOpen);
     }
 
     /// <summary>Determine if the door is subject to reset</summary>

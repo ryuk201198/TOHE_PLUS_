@@ -9,11 +9,14 @@ public class HashAuth(string hashValue, string salt = null, HashAlgorithm algori
 
     public bool CheckString(string value)
     {
-        var hash = CalculateHash(value);
+        string hash = CalculateHash(value);
         return hashValue == hash;
     }
 
-    private string CalculateHash(string source) => CalculateHash(source, salt, algorithm);
+    private string CalculateHash(string source)
+    {
+        return CalculateHash(source, salt, algorithm);
+    }
 
     private static string CalculateHash(string source, string salt = null, HashAlgorithm algorithm = null)
     {
@@ -24,17 +27,14 @@ public class HashAuth(string hashValue, string salt = null, HashAlgorithm algori
         if (salt != null) source += salt;
 
         // 2. Convert source to a byte array
-        var sourceBytes = Encoding.UTF8.GetBytes(source);
+        byte[] sourceBytes = Encoding.UTF8.GetBytes(source);
 
         // 3. Hash sourceBytes
-        var hashBytes = algorithm.ComputeHash(sourceBytes);
+        byte[] hashBytes = algorithm.ComputeHash(sourceBytes);
 
         // 4. Convert hashBytes to a string
         var sb = new StringBuilder();
-        foreach (byte b in hashBytes)
-        {
-            sb.Append(b.ToString("x2")); // Convert each byte to 2-digit hexadecimal notation
-        }
+        foreach (byte b in hashBytes) sb.Append(b.ToString("x2")); // Convert each byte to 2-digit hexadecimal notation
 
         return sb.ToString();
     }

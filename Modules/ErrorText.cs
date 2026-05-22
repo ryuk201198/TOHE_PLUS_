@@ -25,32 +25,29 @@ public class ErrorText : MonoBehaviour
 
     public void Update()
     {
+        if (AllErrors.Count == 0) return;
+        
         AllErrors.ForEach(err => err.IncreaseTimer());
-        var ToRemove = AllErrors.Where(err => err.ErrorLevel <= 1 && 30f < err.Timer).ToArray();
-        if (ToRemove.Length > 0)
+        ErrorData[] toRemove = AllErrors.Where(err => err.ErrorLevel <= 1 && 30f < err.Timer).ToArray();
+
+        if (toRemove.Length > 0)
         {
-            AllErrors.RemoveAll(err => ToRemove.Contains(err));
+            AllErrors.RemoveAll(toRemove.Contains);
             UpdateText();
-            if (HnSFlag)
-                Destroy(gameObject);
+            if (HnSFlag) Destroy(gameObject);
         }
     }
 
     public void LateUpdate()
     {
         if (!Text.enabled) return;
-
-        if (!Camera)
-            Camera = !HudManager.InstanceExists ? _camera : _camera1;
-        if (Camera)
-        {
-            transform.position = AspectPosition.ComputeWorldPosition(Camera, AspectPosition.EdgeAlignments.Top, TextOffset);
-        }
+        if (!Camera) Camera = !HudManager.InstanceExists ? _camera : _camera1;
+        if (Camera) transform.position = AspectPosition.ComputeWorldPosition(Camera, AspectPosition.EdgeAlignments.Top, TextOffset);
     }
 
     public static void Create(TextMeshPro baseText)
     {
-        var Text = Instantiate(baseText);
+        TextMeshPro Text = Instantiate(baseText);
         var instance = Text.gameObject.AddComponent<ErrorText>();
         instance.Text = Text;
         instance.name = "ErrorText";
@@ -71,13 +68,9 @@ public class ErrorText : MonoBehaviour
     public void AddError(ErrorCode code)
     {
         var error = new ErrorData(code);
-        if (0 < error.ErrorLevel && code != ErrorCode.LoadingHint)
-            Logger.Error($"Error: {error}: {error.Message}", "ErrorText");
+        if (0 < error.ErrorLevel && code != ErrorCode.LoadingHint) Logger.Error($"Error: {error}: {error.Message}", "ErrorText");
 
-        if (AllErrors.All(e => e.Code != code))
-        {
-            AllErrors.Add(error);
-        }
+        if (AllErrors.All(e => e.Code != code)) AllErrors.Add(error);
 
         UpdateText();
     }
@@ -86,40 +79,35 @@ public class ErrorText : MonoBehaviour
     {
         try
         {
-            string text = string.Empty;
-            int maxLevel = 0;
-            bool hint = false;
+            var text = string.Empty;
+            var maxLevel = 0;
+            var hint = false;
+
             foreach (ErrorData err in AllErrors)
             {
                 if (err.Code == ErrorCode.LoadingHint) hint = true;
+
                 text += hint ? LoadingScreen.Hint : $"{err}: {err.Message}\n";
                 if (maxLevel < err.ErrorLevel) maxLevel = err.ErrorLevel;
             }
 
             if (maxLevel == 0)
-            {
                 Text.enabled = false;
-            }
             else
             {
-                if (!HnSFlag && !hint)
-                    text += $"{GetString($"ErrorLevel{maxLevel}")}";
-                if (CheatDetected)
-                    text = SBDetected ? GetString("EAC.CheatDetected.HighLevel") : GetString("EAC.CheatDetected.LowLevel");
+                if (!HnSFlag && !hint) text += $"{GetString($"ErrorLevel{maxLevel}")}";
+
+                if (CheatDetected) text = SBDetected ? GetString("EAC.CheatDetected.HighLevel") : GetString("EAC.CheatDetected.LowLevel");
+
                 Text.enabled = true;
             }
 
-            if (GameStates.IsInGame && maxLevel != 3 && !CheatDetected)
-                text += $"\n{GetString("TerminateCommand")}: Shift+L+Enter";
+            if (GameStates.IsInGame && maxLevel != 3 && !CheatDetected) text += $"\n{GetString("TerminateCommand")}: Shift+L+Enter";
+
             Text.text = text;
         }
-        catch (NullReferenceException)
-        {
-        }
-        catch (Exception e)
-        {
-            Logger.Error(e.ToString(), "ErrorText.UpdateText");
-        }
+        catch (NullReferenceException) { }
+        catch (Exception e) { Logger.Error(e.ToString(), "ErrorText.UpdateText"); }
     }
 
     public void Clear()
@@ -139,13 +127,13 @@ public class ErrorText : MonoBehaviour
         {
             Code = code;
             ErrorType1 = (int)code / 10000;
-            ErrorType2 = (int)code / 10 - ErrorType1 * 1000; // xxxyyy - xxx000
-            ErrorLevel = (int)code - (int)code / 10 * 10;
+            ErrorType2 = ((int)code / 10) - (ErrorType1 * 1000); // xxxyyy - xxx000
+            ErrorLevel = (int)code - ((int)code / 10 * 10);
             Timer = 0f;
         }
 
         public float Timer { get; private set; }
-        public string Message => GetString(ToString());
+        public string Message => $"<b>{GetString(ToString())}</b>";
 
         public override string ToString()
         {
@@ -153,7 +141,10 @@ public class ErrorText : MonoBehaviour
             return $"ERR-{ErrorType1:000}-{ErrorType2:000}-{ErrorLevel:0}";
         }
 
-        public void IncreaseTimer() => Timer += Time.deltaTime;
+        public void IncreaseTimer()
+        {
+            Timer += Time.deltaTime;
+        }
     }
 
     #region Singleton
@@ -163,9 +154,7 @@ public class ErrorText : MonoBehaviour
     private void Awake()
     {
         if (Instance)
-        {
             Destroy(gameObject);
-        }
         else
         {
             Instance = this;
@@ -178,18 +167,23 @@ public class ErrorText : MonoBehaviour
     private void FixedUpdate()
     {
         if (Frame++ < 40) return;
+
         Frame = 0;
 
-        if (_camera != null && _camera1 != null) return;
+        if (_camera && _camera1) return;
 
         try
         {
+            if (!HudManager.InstanceExists)
+            {
+                _camera = Camera.main;
+                return;
+            }
+            
             _camera1 = HudManager.Instance.PlayerCam.GetComponent<Camera>();
             _camera = Camera.main;
         }
-        catch
-        {
-        }
+        catch { }
     }
 
     #endregion
@@ -199,7 +193,7 @@ public enum ErrorCode
 {
     //xxxyyyz: ERR-xxx-yyy-z
     // xxx: General type of error (HUD-related, banishment-related, etc.)
-    // yyy: Detailed type of error (BoutyHunter processing, SerialKiller processing, etc.)
+    // yyy: Detailed type of error (BoutyHunter processing, Mercenary processing, etc.)
     // z: Severity
     //      0: No action required (hide)
     //      1: Abandon village if not working properly (hide after a certain period of time)
@@ -210,7 +204,8 @@ public enum ErrorCode
     Main_DictionaryError = 0010003, // 001-000-3 Main Dictionary Error
 
     // 002 Support related
-    UnsupportedVersion = 002_000_1, // 002-000-1 AmongUs version is outdated
+    UnsupportedVersion = 002_000_3, // 002-000-1 AmongUs version is outdated
+    UnsupportedMap = 002_000_1, // 002-000-1 Unsupported Map
 
     // ==========
     // 000 Test
@@ -220,8 +215,8 @@ public enum ErrorCode
     TestError2 = 0009202, // 000-920-2 Test Error 2
     TestError3 = 0009303, // 000-930-3 Test Error 3
     HnsUnload = 000_804_1, // 000-804-1 Unloaded By HnS
-    CheatDetected = 000_666_2, // 000-666-2 疑似存在作弊玩家
-    SBDetected = 000_666_1, // 000-666-1 傻逼外挂司马东西
+    CheatDetected = 000_666_2, // 000-666-2
+    SBDetected = 000_666_1, // 000-666-1
 
     // ==========
     LoadingHint = 000_999_3 // 000-999-3 Loading Hint

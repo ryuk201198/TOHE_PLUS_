@@ -3,10 +3,9 @@ using HarmonyLib;
 
 namespace EHR;
 
-public class AirshipElectricalDoors
+public static class AirshipElectricalDoors
 {
-    private static ElectricalDoors Instance
-        => ShipStatus.Instance.Systems[SystemTypes.Decontamination].Cast<ElectricalDoors>();
+    private static ElectricalDoors Instance => ShipStatus.Instance.Systems[SystemTypes.Decontamination].CastFast<ElectricalDoors>();
 
     public static void Initialize()
     {
@@ -14,18 +13,18 @@ public class AirshipElectricalDoors
         Instance.Initialize();
     }
 
-    public static byte[] GetClosedDoors()
+    public static IEnumerable<byte> GetClosedDoors()
     {
-        List<byte> DoorsArray = [];
-        if (Instance.Doors == null || Instance.Doors.Length == 0) return [.. DoorsArray];
+        List<byte> doorsArray = [];
+        if (Instance.Doors == null || Instance.Doors.Length == 0) return doorsArray;
+
         for (byte i = 0; i < Instance.Doors.Count; i++)
         {
-            var door = Instance.Doors[i];
-            if (door != null && !door.IsOpen)
-                DoorsArray.Add(i);
+            StaticDoor door = Instance.Doors[i];
+            if (door != null && !door.IsOpen) doorsArray.Add(i);
         }
 
-        return DoorsArray?.ToArray();
+        return doorsArray;
     }
     // 0: BottomRightHort
     // 1: BottomHort
@@ -42,25 +41,11 @@ public class AirshipElectricalDoors
 }
 
 [HarmonyPatch(typeof(ElectricalDoors), nameof(ElectricalDoors.Initialize))]
-class ElectricalDoorsInitializePatch
+internal static class ElectricalDoorsInitializePatch
 {
     public static void Postfix( /*ElectricalDoors __instance*/)
     {
         if (!GameStates.IsInGame) return;
-        var closedoors = string.Empty;
-        bool isFirst = true;
-        byte[] array = AirshipElectricalDoors.GetClosedDoors();
-        foreach (byte num in array)
-        {
-            if (isFirst)
-            {
-                isFirst = false;
-                closedoors += num.ToString();
-            }
-            else
-                closedoors += $", {num}";
-        }
-
-        Logger.Info($"Closed Doors: {closedoors}", "ElectricalDoors Initialize");
+        Logger.Info($"Closed Doors: {string.Join(", ", AirshipElectricalDoors.GetClosedDoors())}", "ElectricalDoors Initialize");
     }
 }

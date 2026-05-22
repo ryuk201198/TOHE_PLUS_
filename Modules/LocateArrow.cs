@@ -6,11 +6,11 @@ using UnityEngine;
 
 namespace EHR;
 
-static class LocateArrow
+internal static class LocateArrow
 {
-    static readonly Dictionary<ArrowInfo, string> LocateArrows = [];
+    private static readonly Dictionary<ArrowInfo, string> LocateArrows = [];
 
-    static readonly string[] Arrows =
+    private static readonly string[] Arrows =
     [
         "↑",
         "↗",
@@ -45,13 +45,16 @@ static class LocateArrow
     }
 
     /// <summary>
-    /// Register a new target arrow object
+    ///     Register a new target arrow object
     /// </summary>
     /// <param name="seer"></param>
     /// <param name="locate"></param>
     public static void Add(byte seer, Vector3 locate)
     {
-        var arrowInfo = new ArrowInfo(seer, locate);
+        if (Main.PlayerStates.TryGetValue(seer, out var state) && state.SubRoles.Contains(CustomRoles.Blind)) return;
+
+        ArrowInfo arrowInfo = new(seer, locate);
+
         if (!LocateArrows.Any(a => a.Key.Equals(arrowInfo)))
         {
             LocateArrows[arrowInfo] = "・";
@@ -61,41 +64,36 @@ static class LocateArrow
     }
 
     /// <summary>
-    /// Delete target
+    ///     Delete target
     /// </summary>
     /// <param name="seer"></param>
     /// <param name="locate"></param>
     public static void Remove(byte seer, Vector3 locate)
     {
-        var arrowInfo = new ArrowInfo(seer, locate);
-        var removeList = new List<ArrowInfo>(LocateArrows.Keys.Where(k => k.Equals(arrowInfo)));
-        foreach (ArrowInfo a in removeList.ToArray())
-        {
-            LocateArrows.Remove(a);
-        }
+        ArrowInfo arrowInfo = new(seer, locate);
+        List<ArrowInfo> removeList = new(LocateArrows.Keys.Where(k => k.Equals(arrowInfo)));
+        if (removeList.Count == 0) return;
+        removeList.ForEach(a => LocateArrows.Remove(a));
 
         Utils.SendRPC(CustomRPC.Arrow, false, 2, seer, locate);
         Logger.Info($"Removed locate arrow: {seer} ({seer.GetPlayer()?.GetRealName()}) => {locate}", "LocateArrow");
     }
 
     /// <summary>
-    /// Delete all targets for the specified seer
+    ///     Delete all targets for the specified seer
     /// </summary>
     /// <param name="seer"></param>
     public static void RemoveAllTarget(byte seer)
     {
-        var removeList = new List<ArrowInfo>(LocateArrows.Keys.Where(k => k.From == seer));
-        foreach (ArrowInfo arrowInfo in removeList.ToArray())
-        {
-            LocateArrows.Remove(arrowInfo);
-        }
-
+        List<ArrowInfo> removeList = new(LocateArrows.Keys.Where(k => k.From == seer));
+        if (removeList.Count == 0) return;
+        removeList.ForEach(a => LocateArrows.Remove(a));
         Utils.SendRPC(CustomRPC.Arrow, false, 3, seer);
         Logger.Info($"Removed all locate arrows for: {seer} ({seer.GetPlayer()?.GetRealName()})", "LocateArrow");
     }
 
     /// <summary>
-    /// Get all visible target arrows
+    ///     Get all visible target arrows
     /// </summary>
     /// <param name="seer"></param>
     /// <returns></returns>
@@ -105,23 +103,45 @@ static class LocateArrow
     }
 
     /// <summary>
-    /// Check target arrow every FixedUpdate
-    /// Issue NotifyRoles when there are updates
+    ///     Get a specific visible target arrow
+    /// </summary>
+    /// <param name="seer"></param>
+    /// <param name="position"></param>
+    /// <returns></returns>
+    public static string GetArrow(PlayerControl seer, Vector3 position)
+    {
+        ArrowInfo arrowInfo = new(seer.PlayerId, position);
+        return LocateArrows.FirstOrDefault(a => a.Key.Equals(arrowInfo)).Value ?? string.Empty;
+    }
+
+    private static readonly List<ArrowInfo> ArrowList = [];
+    /// <summary>
+    ///     Check target arrow every FixedUpdate
+    ///     Issue NotifyRoles when there are updates
     /// </summary>
     /// <param name="seer"></param>
     public static void OnFixedUpdate(PlayerControl seer)
     {
         if (!GameStates.IsInTask) return;
 
-        var seerIsDead = !seer.IsAlive();
+        bool seerIsDead = !seer.IsAlive();
 
-        var arrowList = new List<ArrowInfo>(LocateArrows.Keys.Where(a => a.From == seer.PlayerId));
-        if (arrowList.Count == 0) return;
+        ArrowList.Clear();
+        foreach (var arrowInfo in LocateArrows.Keys)
+        {
+            if (arrowInfo.From == seer.PlayerId)
+                ArrowList.Add(arrowInfo);
+        }
+        int arrowCount = ArrowList.Count;
+        if (arrowCount == 0) return;
 
         var update = false;
-        foreach (ArrowInfo arrowInfo in arrowList.ToArray())
+
+        for (int arrowId = 0; arrowId < arrowCount; arrowId++)
         {
-            var loc = arrowInfo.To;
+            ArrowInfo arrowInfo = ArrowList[arrowId];
+            Vector3 loc = arrowInfo.To;
+
             if (seerIsDead)
             {
                 LocateArrows.Remove(arrowInfo);
@@ -130,8 +150,9 @@ static class LocateArrow
             }
 
             // Take the direction vector of the target
-            var dir = loc - seer.transform.position;
+            Vector3 dir = loc - seer.transform.position;
             int index;
+
             if (dir.magnitude < 2)
             {
                 // Display a dot when close
@@ -143,11 +164,12 @@ static class LocateArrow
                 // Bottom is 0 degrees, left side is +180, right side is -180
                 // Adding 180 degrees clockwise with top being 0 degrees
                 // Add 45/2 to make index in 45 degree units
-                var angle = Vector3.SignedAngle(Vector3.down, dir, Vector3.back) + 180 + 22.5;
-                index = ((int)(angle / 45)) % 8;
+                double angle = Vector3.SignedAngle(Vector3.down, dir, Vector3.back) + 180 + 22.5;
+                index = (int)(angle / 45) % 8;
             }
 
-            var arrow = Arrows[index];
+            string arrow = Arrows[index];
+
             if (LocateArrows[arrowInfo] != arrow)
             {
                 LocateArrows[arrowInfo] = arrow;
@@ -155,16 +177,13 @@ static class LocateArrow
             }
         }
 
-        if (update)
-        {
-            Utils.NotifyRoles(SpecifySeer: seer, ForceLoop: false, SpecifyTarget: seer);
-        }
+        if (update) Utils.NotifyRoles(SpecifySeer: seer, ForceLoop: false, SpecifyTarget: seer);
     }
 
-    class ArrowInfo(byte from, Vector3 to)
+    private class ArrowInfo(byte from, Vector3 to)
     {
-        public byte From = from;
-        public Vector3 To = to;
+        public readonly byte From = from;
+        public readonly Vector3 To = to;
 
         public bool Equals(ArrowInfo obj)
         {

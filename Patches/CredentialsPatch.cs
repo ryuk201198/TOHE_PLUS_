@@ -1,10 +1,11 @@
 using System;
 using System.Collections.Generic;
-using System.Text;
+using System.Runtime.CompilerServices;
 using EHR.Modules;
 using HarmonyLib;
 using TMPro;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using static EHR.Translator;
 
 
@@ -16,48 +17,124 @@ internal static class PingTrackerUpdatePatch
     public static PingTracker Instance;
     private static readonly StringBuilder Sb = new();
     private static long LastUpdate;
-    private static int Delay => GameStates.IsInTask ? 8 : 1;
 
-    private static void Postfix(PingTracker __instance)
+    private static readonly float[] FpsBuffer = new float[10];
+    private static int FpsIndex;
+    private static int FpsCount;
+    private static Color32 FpsColor = new(0, 165, 255, 255);
+
+    public static bool Prefix(PingTracker __instance)
     {
-        Instance = __instance;
+        FpsSampler.TickFrame();
+        PingTracker instance = !Instance ? __instance : Instance;
+        
+        var client = AmongUsClient.Instance;
+        if (!client) return false;
 
-        Instance.text.alignment = TextAlignmentOptions.Center;
-        Instance.text.text = Sb.ToString();
+        if (client.NetworkMode == NetworkModes.FreePlay)
+        {
+            instance.gameObject.SetActive(false);
+            return false;
+        }
+
+        if (instance.name != "EHR_SettingsText")
+        {
+            instance.aspectPosition.DistanceFromEdge = !client.IsGameStarted ? instance.lobbyPos : instance.gamePos;
+
+            instance.text.alignment = TextAlignmentOptions.Center;
+            instance.text.text = Sb.ToString();
+        }
+
+        if (!Instance) Instance = __instance;
 
         long now = Utils.TimeStamp;
-        if (now + Delay <= LastUpdate) return; // Only update every 2 seconds
+        if (now == LastUpdate) return false;
         LastUpdate = now;
 
-        Sb.Clear();
+        bool inGame = GameStates.InGame;
+        Sb.Clear()
+            .Append(GameStates.IsLobby ? "\r\n<size=2>" : "<size=1.5>")
+            .Append(Main.CredentialsText);
 
-        if (GameStates.IsLobby) Sb.Append("\r\n");
+        int ping = client.Ping;
 
-        Sb.Append(Main.CredentialsText);
+        string color =
+            ping < 30 ? "#44dfcc" :
+            ping < 100 ? "#7bc690" :
+            ping < 200 ? "#f3920e" :
+            ping < 400 ? "#ff146e" :
+            "#ff4500";
 
-        var ping = AmongUsClient.Instance.Ping;
-        string color = ping switch
+        Sb.Append(inGame ? "    -    " : "\r\n")
+            .Append("<color=")
+            .Append(color)
+            .Append('>')
+            .Append(GetString("PingText"))
+            .Append(": ")
+            .Append(ping)
+            .Append("</color>");
+
+        AppendSeparator(inGame);
+
+        Sb.Append(GetString("Server"))
+            .Append("<b>")
+            .Append(Utils.GetRegionName())
+            .Append("</b>");
+
+        if (Main.ShowFps.Value && FpsCount > 0)
         {
-            < 30 => "#44dfcc",
-            < 100 => "#7bc690",
-            < 200 => "#f3920e",
-            < 400 => "#ff146e",
-            _ => "#ff4500"
-        };
-        Sb.Append(GameStates.InGame ? "    -    " : "\r\n");
-        Sb.Append($"<color={color}>{GetString("PingText")}: {ping} ms</color>");
-        Sb.Append(GameStates.InGame ? "    -    " : "\r\n");
-        Sb.Append(string.Format(GetString("Server"), Utils.GetRegionName()));
-        if (GameStates.InGame) Sb.Append("\r\n.");
+            float sum = 0f;
+            for (int i = 0; i < FpsCount; i++)
+                sum += FpsBuffer[i];
 
-        // if (Options.NoGameEnd.GetBool()) Sb.Append("\r\n<size=1.2>").Append(Utils.ColorString(Color.red, GetString("NoGameEnd"))).Append("</size>");
-        // if (!GameStates.IsModHost) Sb.Append("\r\n<size=1.2>").Append(Utils.ColorString(Color.red, GetString("Warning.NoModHost"))).Append("</size>");
-        // if (DebugModeManager.IsDebugMode) Sb.Append("\r\n<size=1.2>").Append(Utils.ColorString(Color.green, GetString("DebugMode"))).Append("</size>");
-        //
-        // if (Main.IsAprilFools || Options.AprilFoolsMode.GetBool()) Sb.Append("\r\n<size=1.2>").Append(Utils.ColorString(Color.yellow, "CHEESE")).Append("</size>");
+            float fps = sum / FpsCount;
+
+            Color fpsColor =
+                fps < 10f ? Color.red :
+                fps < 25f ? Color.yellow :
+                fps < 50f ? Color.green :
+                FpsColor;
+
+            AppendSeparator(inGame);
+
+            Sb.Append(Utils.ColorPrefix(fpsColor))
+                .Append(Utils.ColorPrefix(Color.cyan))
+                .Append(GetString("FPSGame"))
+                .Append((int)fps)
+                .Append("</color>")
+                .Append("</color>");
+        }
+
+        if (inGame) Sb.Append("\r\n.");
+        return false;
+    }
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void AppendSeparator(bool inGame)
+    {
+        Sb.Append(inGame ? "    -    " : "  -  ");
+    }
+
+    static class FpsSampler
+    {
+        private static int Frames;
+        private static float Elapsed;
+        private const float SampleInterval = 0.5f; // half-second window
+
+        public static void TickFrame()
+        {
+            Frames++;
+            Elapsed += Time.unscaledDeltaTime;
+            if (Elapsed < SampleInterval) return;
+            float fps = Frames / Elapsed;
+            FpsBuffer[FpsIndex] = fps;
+            if (FpsCount < 10) FpsCount++;
+            FpsIndex++;
+            if (FpsIndex >= 10) FpsIndex = 0;
+            Frames = 0;
+            Elapsed = 0f;
+        }
     }
 }
-
 [HarmonyPatch(typeof(VersionShower), nameof(VersionShower.Start))]
 internal static class VersionShowerStartPatch
 {
@@ -65,97 +142,299 @@ internal static class VersionShowerStartPatch
     {
 #pragma warning disable CS0162 // Unreachable code detected
         // ReSharper disable once HeuristicUnreachableCode
-        var testBuildIndicator = Main.TestBuild ? " <#ff0000>TEST</color>" : string.Empty;
+        string testBuildIndicator = Main.TestBuild ? " <#ff0000>TEST</color>" : string.Empty;
 #pragma warning restore CS0162 // Unreachable code detected
 
-        Main.CredentialsText = $"<size=1.5><color={Main.ModColor}>Endless Host Roles</color> v{Main.PluginDisplayVersion}{testBuildIndicator} <color=#a54aff>by</color> <color=#ffff00>Gurge44</color>";
-        var menuText = $"<color={Main.ModColor}>Endless Host Roles</color> v{Main.PluginDisplayVersion}{testBuildIndicator}\r\n<color=#a54aff>By</color> <color=#ffff00>Gurge44</color>";
+        Main.CredentialsText = $"<color={Main.ModColor}>Endless Host Roles</color> v{Main.PluginDisplayVersion}{testBuildIndicator} <color=#a54aff>by</color> <color=#ffff00>Gurge44</color>";
 
         if (Main.IsAprilFools) Main.CredentialsText = "<color=#00bfff>Endless Madness</color> v11.45.14 <color=#a54aff>by</color> <color=#ffff00>No one</color>";
 
-        var credentials = Object.Instantiate(__instance.text);
-        credentials.text = menuText;
-        credentials.alignment = TextAlignmentOptions.Right;
-        credentials.transform.position = new(1f, 2.67f, -2f);
-        credentials.fontSize = credentials.fontSizeMax = credentials.fontSizeMin = 2f;
-
         ErrorText.Create(__instance.text);
-        if (Main.HasArgumentException && ErrorText.Instance != null)
-        {
+
+        if (Main.HasArgumentException && ErrorText.Instance)
             ErrorText.Instance.AddError(ErrorCode.Main_DictionaryError);
-        }
 
         VersionChecker.Check();
     }
 }
 
-[HarmonyPatch(typeof(MainMenuManager), nameof(MainMenuManager.Start)), HarmonyPriority(Priority.First)]
-internal class TitleLogoPatch
+// From TONX/Patches/AccountManagerPatch.cs, by KARPED1EM
+[HarmonyPatch(typeof(AccountTab), nameof(AccountTab.Awake))]
+public static class UpdateFriendCodeUIPatch
 {
-    public static GameObject ModStamp;
+    private static GameObject VersionShower;
 
-    public static GameObject Ambience;
+    public static void Prefix()
+    {
+        var credentialsText = $"<color={Main.ModColor}>Gurge44</color> \u00a9 2026";
+        credentialsText += "\t\t\t";
+        credentialsText += $"<color={Main.ModColor}>{Main.ModName}</color> - {Main.PluginVersion}";
 
-    // public static GameObject LoadingHint;
-    public static GameObject LeftPanel;
+        GameObject friendCode = GameObject.Find("FriendCode");
+
+        if (friendCode && !VersionShower)
+        {
+            VersionShower = Object.Instantiate(friendCode, friendCode.transform.parent);
+            VersionShower.name = "EHR Version Shower";
+            VersionShower.transform.localPosition = friendCode.transform.localPosition + new Vector3(3.2f, 0f, 0f);
+            VersionShower.transform.localScale *= 1.7f;
+            var tmp = VersionShower.GetComponent<TextMeshPro>();
+            tmp.alignment = TextAlignmentOptions.Right;
+            tmp.fontSize = 30f;
+            tmp.SetText(credentialsText);
+        }
+
+        GameObject newRequest = GameObject.Find("NewRequest");
+
+        if (newRequest)
+        {
+            newRequest.transform.localPosition -= new Vector3(0f, 0f, 10f);
+            newRequest.transform.localScale = new(0f, 0f, 0f);
+        }
+
+        GameObject friendsButton = GameObject.Find("FriendsButton");
+
+        if (friendsButton)
+        {
+            friendsButton.transform.FindChild("Highlight").GetComponent<SpriteRenderer>().color = new(0f, 0.647f, 1f, 1f);
+            friendsButton.transform.FindChild("Inactive").GetComponent<SpriteRenderer>().color = new(0f, 0.847f, 1f, 1f);
+        }
+    }
+}
+
+[HarmonyPatch(typeof(FriendsListUI), nameof(FriendsListUI.Open))]
+internal static class FriendsListUIOpenPatch
+{
+    public static bool Prefix(FriendsListUI __instance)
+    {
+        try
+        {
+            if (__instance.gameObject.activeSelf || __instance.currentSceneName == "")
+                __instance.Close();
+            else
+            {
+                FriendsListBar[] componentsInChildren = __instance.GetComponentsInChildren<FriendsListBar>(true);
+
+                for (var index = 0; index < componentsInChildren.Length; ++index)
+                {
+                    if (componentsInChildren[index])
+                        Object.Destroy(componentsInChildren[index].gameObject);
+                }
+
+                Scene activeScene = SceneManager.GetActiveScene();
+                __instance.currentSceneName = activeScene.name;
+                __instance.UpdateFriendCodeUI();
+
+                if ((HudManager.InstanceExists && HudManager.InstanceExists && HudManager.Instance.Chat && HudManager.Instance.Chat.IsOpenOrOpening) || ShipStatus.Instance)
+                    return false;
+
+                __instance.friendBars = new();
+                __instance.lobbyBars = new();
+                __instance.notifBars = new();
+                __instance.platformFriendBars = new();
+                __instance.viewingAllFriends = true;
+                __instance.gameObject.SetActive(true);
+                __instance.guestAccountWarnings.ForEach((Action<FriendsListGuestWarning>)(t => t.gameObject.SetActive(false)));
+                __instance.ViewRequestsButton.color = __instance.NoRequestsColor;
+                __instance.ViewRequestsText.text = TranslationController.Instance.GetString(StringNames.NoNewRequests);
+
+                __instance.StartCoroutine(FriendsListManager.Instance.RefreshFriendsList((Action)(() =>
+                {
+                    __instance.ClearNotifs();
+
+                    if (EOSManager.Instance.IsFriendsListAllowed())
+                    {
+                        __instance.AddFriendObjects.SetActive(true);
+                        __instance.RefreshBlockedPlayers();
+                        __instance.RefreshFriends();
+                        __instance.RefreshNotifications();
+                    }
+                    else
+                    {
+                        __instance.AddFriendObjects.SetActive(false);
+                        __instance.guestAccountWarnings.ForEach((Action<FriendsListGuestWarning>)(g => g.SetUp()));
+                    }
+
+                    __instance.RefreshRecentlyPlayed();
+                    __instance.RefreshPlatformFriends();
+
+                    foreach (FriendsListBar friendBar in __instance.friendBars)
+                    {
+                        foreach (PassiveButton passiveButton in friendBar.ControllerSelectable)
+                            ControllerManager.Instance.AddSelectableUiElement(passiveButton);
+                    }
+
+                    foreach (FriendsListBar platformFriendBar in __instance.platformFriendBars)
+                    {
+                        foreach (PassiveButton passiveButton in platformFriendBar.ControllerSelectable)
+                            ControllerManager.Instance.AddSelectableUiElement(passiveButton);
+                    }
+
+                    foreach (FriendsListBar notifBar in __instance.notifBars)
+                    {
+                        foreach (PassiveButton passiveButton in notifBar.ControllerSelectable)
+                            ControllerManager.Instance.AddSelectableUiElement(passiveButton);
+                    }
+
+                    foreach (FriendsListBar lobbyBar in __instance.lobbyBars)
+                    {
+                        foreach (PassiveButton passiveButton in lobbyBar.ControllerSelectable)
+                            ControllerManager.Instance.AddSelectableUiElement(passiveButton);
+                    }
+
+                    ControllerManager.Instance.PickTopSelectable();
+                })));
+
+                if (__instance.currentSceneName == "OnlineGame")
+                {
+                    __instance.RefreshLobbyPlayers();
+                    __instance.LobbyPlayersTab.SetActive(true);
+                    __instance.LobbyPlayersInactiveTab.SetActive(false);
+                    __instance.OpenTab(0);
+                }
+                else
+                {
+                    __instance.LobbyPlayersInactiveTab.SetActive(true);
+                    __instance.LobbyPlayersTab.SetActive(false);
+                    __instance.OpenTab(2);
+                }
+
+                ControllerManager.Instance.OpenOverlayMenu(__instance.name, __instance.BackButton, __instance.DefaultButtonSelected, __instance.ControllerSelectable);
+            }
+        }
+        catch (Exception e) { Utils.ThrowException(e); }
+
+        return false;
+    }
+}
+
+[HarmonyPatch(typeof(MainMenuManager), nameof(MainMenuManager.Start))]
+[HarmonyPriority(Priority.First)]
+internal static class TitleLogoPatch
+{
+    private static GameObject ModStamp;
+    private static GameObject Ambience;
+    private static GameObject CustomBG;
+    private static GameObject SpecialMessage;
+    private static GameObject LeftPanel;
     public static GameObject RightPanel;
-    public static GameObject CloseRightButton;
-    public static GameObject Tint;
-    public static GameObject BottomButtonBounds;
+    private static GameObject CloseRightButton;
+    private static GameObject Tint;
+    private static GameObject BottomButtonBounds;
 
     public static Vector3 RightPanelOp;
+    
+    private static bool IsEasterPeriod(int daysBefore = 2, int daysAfter = 1)
+    {
+        DateTime today = DateTime.Today;
+        DateTime easter = GetEasterSunday(today.Year);
+
+        DateTime start = easter.AddDays(-daysBefore);
+        DateTime end = easter.AddDays(daysAfter);
+
+        return today >= start && today <= end;
+    }
+
+    private static DateTime GetEasterSunday(int year)
+    {
+        int a = year % 19;
+        int b = year / 100;
+        int c = year % 100;
+        int d = b / 4;
+        int e = b % 4;
+        int f = (b + 8) / 25;
+        int g = (b - f + 1) / 3;
+        int h = (19 * a + b - d - g + 15) % 30;
+        int i = c / 4;
+        int j = c % 4;
+        int k = (32 + 2 * e + 2 * i - h - j) % 7;
+        int l = (a + 11 * h + 22 * k) / 451;
+
+        int month = (h + k - 7 * l + 114) / 31;
+        int day = ((h + k - 7 * l + 114) % 31) + 1;
+
+        return new DateTime(year, month, day);
+    }
 
     private static void Postfix(MainMenuManager __instance)
     {
         GameObject.Find("BackgroundTexture")?.SetActive(!MainMenuManagerPatch.ShowedBak);
 
+        DateTime now = DateTime.Now;
+        bool holidays = now is { Month: 12, Day: < 24 or > 26 };
+        bool christmas = now is { Month: 12, Day: >= 24 and <= 26 };
+        bool newYear = now is { Month: 1, Day: <= 6 };
+        bool easter = IsEasterPeriod();
+
+        if (!SpecialMessage && (holidays || christmas || newYear || easter))
+        {
+            SpecialMessage = new GameObject("SpecialMessage");
+            SpecialMessage.transform.SetParent(__instance.transform);
+            SpecialMessage.transform.position = new Vector3(0f, -2.5f, 0f);
+            var text = SpecialMessage.AddComponent<TextMeshPro>();
+            text.alignment = TextAlignmentOptions.Center;
+            text.fontSize = 3f;
+            text.color = Color.white;
+            text.outlineColor = Color.black;
+            text.outlineWidth = 0.2f;
+            text.enableWordWrapping = false;
+            text.fontWeight = FontWeight.Black;
+            text.text = $"<b>{GetString(holidays ? "HolidayGreeting" : christmas ? "ChristmasGreeting" : newYear ? "NewYearGreeting" : "EasterGreeting")}</b>";
+        }
+
+        if (!CustomBG && (holidays || christmas || newYear || easter))
+        {
+            CustomBG = new GameObject("CustomBG");
+            CustomBG.transform.SetParent(__instance.transform);
+            CustomBG.transform.position = new(0f, 0f, 520f);
+            var sr = CustomBG.AddComponent<SpriteRenderer>();
+            sr.sprite = Utils.LoadSprite(easter ? "EHR.Resources.Images.EasterBG.jpg" : "EHR.Resources.Images.WinterBG.jpg", 180f);
+            PlayerParticles pp = Object.FindObjectOfType<PlayerParticles>();
+            if (pp) pp.gameObject.SetActive(false);
+        }
+
         if (!(ModStamp = GameObject.Find("ModStamp"))) return;
+
         ModStamp.transform.localScale = new(0.3f, 0.3f, 0.3f);
 
         Ambience = GameObject.Find("Ambience");
-        if (Ambience != null)
+
+        if (Ambience)
         {
-            try
-            {
-                __instance.playButton.transform.gameObject.SetActive(true);
-            }
-            catch (Exception ex)
-            {
-                Logger.Warn(ex.ToString(), "MainMenuLoader");
-            }
+            try { __instance.playButton.transform.gameObject.SetActive(true); }
+            catch (Exception ex) { Logger.Warn(ex.ToString(), "MainMenuLoader"); }
         }
 
         if (!(LeftPanel = GameObject.Find("LeftPanel"))) return;
+
         LeftPanel.transform.localScale = new(0.7f, 0.7f, 0.7f);
         LeftPanel.ForEachChild((Il2CppSystem.Action<GameObject>)ResetParent);
         LeftPanel.SetActive(false);
 
         Color shade = new(0f, 0f, 0f, 0f);
-        var standardActiveSprite = __instance.newsButton.activeSprites.GetComponent<SpriteRenderer>().sprite;
-        var minorActiveSprite = __instance.quitButton.activeSprites.GetComponent<SpriteRenderer>().sprite;
+        Sprite standardActiveSprite = __instance.newsButton.activeSprites.GetComponent<SpriteRenderer>().sprite;
+        Sprite minorActiveSprite = __instance.quitButton.activeSprites.GetComponent<SpriteRenderer>().sprite;
 
         Dictionary<List<PassiveButton>, (Sprite, Color, Color, Color, Color)> mainButtons = new()
         {
-            { [__instance.playButton, __instance.inventoryButton, __instance.shopButton], (standardActiveSprite, new(1f, 0.524f, 0.549f, 0.8f), shade, Color.white, Color.white) },
-            { [__instance.newsButton, __instance.myAccountButton, __instance.settingsButton], (minorActiveSprite, new(1f, 0.825f, 0.686f, 0.8f), shade, Color.white, Color.white) },
-            { [__instance.creditsButton, __instance.quitButton], (minorActiveSprite, new(0.526f, 1f, 0.792f, 0.8f), shade, Color.white, Color.white) },
+            { [__instance.playButton, __instance.inventoryButton, __instance.shopButton], (standardActiveSprite, new(0f, 0.647f, 1f, 0.8f), shade, Color.white, Color.white) },
+            { [__instance.newsButton, __instance.myAccountButton, __instance.settingsButton], (minorActiveSprite, new(0f, 0.9f, 0.9f, 0.8f), shade, Color.white, Color.white) },
+            { [__instance.creditsButton, __instance.quitButton], (minorActiveSprite, new(0.825f, 0.825f, 0.286f, 0.8f), shade, Color.white, Color.white) }
         };
 
-        foreach (var kvp in mainButtons) kvp.Key.Do(button => FormatButtonColor(button, kvp.Value.Item2, kvp.Value.Item3, kvp.Value.Item4, kvp.Value.Item5));
+        foreach (KeyValuePair<List<PassiveButton>, (Sprite, Color, Color, Color, Color)> kvp in mainButtons)
+            kvp.Key.ForEach(button => FormatButtonColor(button, kvp.Value.Item2, kvp.Value.Item3, kvp.Value.Item4, kvp.Value.Item5));
 
-        try
-        {
-            mainButtons.Keys.Flatten().DoIf(x => x != null, x => x.buttonText.color = Color.white);
-        }
-        catch
-        {
-        }
+        try { mainButtons.Keys.Flatten().DoIf(x => x, x => x.buttonText.color = Color.white); }
+        catch { }
 
         GameObject.Find("Divider")?.SetActive(false);
 
         if (!(RightPanel = GameObject.Find("RightPanel"))) return;
+
         var rpap = RightPanel.GetComponent<AspectPosition>();
         if (rpap) Object.Destroy(rpap);
+
         RightPanelOp = RightPanel.transform.localPosition;
         RightPanel.transform.localPosition = RightPanelOp + new Vector3(10f, 0f, 0f);
         RightPanel.GetComponent<SpriteRenderer>().color = new(1f, 0.78f, 0.9f, 1f);
@@ -179,6 +458,7 @@ internal class TitleLogoPatch
         Tint = __instance.screenTint.gameObject;
         var ttap = Tint.GetComponent<AspectPosition>();
         if (ttap) Object.Destroy(ttap);
+
         Tint.transform.SetParent(RightPanel.transform);
         Tint.transform.localPosition = new(-0.0824f, 0.0513f, Tint.transform.localPosition.z);
         Tint.transform.localScale = new(1f, 1f, 1f);
@@ -186,6 +466,7 @@ internal class TitleLogoPatch
         __instance.howToPlayButton.transform.parent.Find("FreePlayButton").gameObject.SetActive(false);
 
         if (!(BottomButtonBounds = GameObject.Find("BottomButtonBounds"))) return;
+
         BottomButtonBounds.transform.localPosition -= new Vector3(0f, 0.1f, 0f);
 
         return;
@@ -209,59 +490,68 @@ internal class TitleLogoPatch
 }
 
 [HarmonyPatch(typeof(ModManager), nameof(ModManager.LateUpdate))]
-internal class ModManagerLateUpdatePatch
+internal static class ModManagerLateUpdatePatch
 {
     public static bool Prefix(ModManager __instance)
     {
         __instance.ShowModStamp();
 
-        LateTask.Update(Time.deltaTime);
-        CheckMurderPatch.Update();
+        ChatBubbleShower.Update();
+
+        if (!string.IsNullOrEmpty(LobbySharingAPI.LastRoomCode) && Utils.TimeStamp - LobbySharingAPI.LastRequestTimeStamp > Options.LobbyUpdateInterval.GetInt())
+            LobbySharingAPI.NotifyLobbyStatusChanged(!PlayerControl.LocalPlayer ? LobbyStatus.Closed : GameStates.InGame ? LobbyStatus.In_Game : LobbyStatus.In_Lobby);
 
         return false;
     }
 
     public static void Postfix(ModManager __instance)
     {
-        __instance.localCamera = !DestroyableSingleton<HudManager>.InstanceExists ? Camera.main : DestroyableSingleton<HudManager>.Instance.GetComponentInChildren<Camera>();
-        if (__instance.localCamera != null)
+        if (__instance.localCamera)
         {
-            var offsetY = HudManager.InstanceExists ? 1.1f : 0.9f;
+            float offsetY = HudManager.InstanceExists ? 1.1f : 0.9f;
+
             __instance.ModStamp.transform.position = AspectPosition.ComputeWorldPosition(
                 __instance.localCamera, AspectPosition.EdgeAlignments.RightTop,
                 new(0.4f, offsetY, __instance.localCamera.nearClipPlane + 0.1f));
+        }
+        else
+        {
+            __instance.localCamera = !HudManager.InstanceExists
+                ? Camera.main
+                : HudManager.Instance.GetComponentInChildren<Camera>();
         }
     }
 }
 
 [HarmonyPatch(typeof(OptionsMenuBehaviour), nameof(OptionsMenuBehaviour.Open))]
-class OptionsMenuBehaviourOpenPatch
+internal static class OptionsMenuBehaviourOpenPatch
 {
     public static bool Prefix(OptionsMenuBehaviour __instance)
     {
         try
         {
-            if (DestroyableSingleton<HudManager>.InstanceExists && !DestroyableSingleton<HudManager>.Instance.SettingsButton.activeSelf)
-                return false;
+            if (HudManager.InstanceExists && !HudManager.Instance.SettingsButton.activeSelf) return false;
         }
-        catch
-        {
-        }
+        catch { }
 
         __instance.ResetText();
+
         if (__instance.gameObject.activeSelf)
         {
             if (!__instance.Toggle) return false;
+
             __instance.GetComponent<TransitionOpen>().Close();
         }
         else
         {
-            if (Minigame.Instance != null) Minigame.Instance.Close();
+            if (Minigame.Instance) Minigame.Instance.Close();
+
             __instance.OpenTabGroup(0);
             __instance.UpdateButtons();
             __instance.gameObject.SetActive(true);
             __instance.MenuButton?.SelectButton(true);
-            if (DestroyableSingleton<HudManager>.InstanceExists) ConsoleJoystick.SetMode_MenuAdditive();
+            if (HudManager.InstanceExists) ConsoleJoystick.SetMode_MenuAdditive();
+
             if (!__instance.grabbedControllerButtons)
             {
                 __instance.grabbedControllerButtons = true;
@@ -272,11 +562,5 @@ class OptionsMenuBehaviourOpenPatch
         }
 
         return false;
-    }
-
-    public static void Postfix()
-    {
-        if (GameStates.InGame && GameStates.IsMeeting)
-            GuessManager.DestroyIDLabels();
     }
 }

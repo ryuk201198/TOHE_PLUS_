@@ -6,20 +6,18 @@ namespace EHR;
 
 public class SimpleButton
 {
-    private static PassiveButton baseButton;
-    private readonly BoxCollider2D buttonCollider;
-    private float _fontSize;
-    private Vector2 _scale;
+    private static PassiveButton BaseButton;
+    private static BoxCollider2D ButtonCollider;
 
-    /// <summary>新しいボタンを作成する</summary>
-    /// <param name="parent">親オブジェクト</param>
-    /// <param name="name">オブジェクト名</param>
-    /// <param name="normalColor">通常時の背景色</param>
-    /// <param name="hoverColor">マウスホバー時の背景色</param>
-    /// <param name="action">クリック時に発火するアクション</param>
-    /// <param name="label">ボタンのラベル</param>
-    /// <param name="scale">ボタンの大きさ</param>
-    /// <param name="isActive">初期状態でアクティブにするかどうか(デフォルトtrue)</param>
+    /// <summary>Creates a new button</summary>
+    /// <param name="parent">Parent object</param>
+    /// <param name="name">Object name</param>
+    /// <param name="normalColor">Background color in normal state</param>
+    /// <param name="hoverColor">Background color when mouse hovers</param>
+    /// <param name="action">Action triggered on click</param>
+    /// <param name="label">Button label</param>
+    /// <param name="localPosition">Button position</param>
+    /// <param name="isActive">Whether to be active initially (default true)</param>
     public SimpleButton(
         Transform parent,
         string name,
@@ -30,19 +28,16 @@ public class SimpleButton
         string label,
         bool isActive = true)
     {
-        if (baseButton == null)
-        {
-            throw new InvalidOperationException("baseButtonが未設定");
-        }
+        if (!BaseButton) throw new InvalidOperationException("baseButton is null or destroyed");
 
-        Button = Object.Instantiate(baseButton, parent);
+        Button = Object.Instantiate(BaseButton, parent);
         Label = Button.transform.Find("FontPlacer/Text_TMP").GetComponent<TextMeshPro>();
         NormalSprite = Button.inactiveSprites.GetComponent<SpriteRenderer>();
         HoverSprite = Button.activeSprites.GetComponent<SpriteRenderer>();
-        buttonCollider = Button.GetComponent<BoxCollider2D>();
+        ButtonCollider = Button.GetComponent<BoxCollider2D>();
 
-        // ラベルをセンタリング
-        var container = Label.transform.parent;
+        // Center the label
+        Transform container = Label.transform.parent;
         Object.Destroy(Label.GetComponent<AspectPosition>());
         container.SetLocalX(0f);
         Label.transform.SetLocalX(0f);
@@ -61,44 +56,43 @@ public class SimpleButton
     public TextMeshPro Label { get; }
     public SpriteRenderer NormalSprite { get; }
     public SpriteRenderer HoverSprite { get; }
-
+    
     public Vector2 Scale
     {
-        get => _scale;
-        set => _scale = NormalSprite.size = HoverSprite.size = buttonCollider.size = value;
+        set => NormalSprite.size = HoverSprite.size = ButtonCollider.size = value;
     }
 
     public float FontSize
     {
-        get => _fontSize;
-        set => _fontSize = Label.fontSize = Label.fontSizeMin = Label.fontSizeMax = value;
+        set => Label.fontSize = Label.fontSizeMin = Label.fontSizeMax = value;
     }
 
     public static void SetBase(PassiveButton passiveButton)
     {
-        if (baseButton != null || passiveButton == null)
-        {
-            return;
-        }
+        if (BaseButton || !passiveButton) return;
 
-        // 複製
-        baseButton = Object.Instantiate(passiveButton);
-        var label = baseButton.transform.Find("FontPlacer/Text_TMP").GetComponent<TextMeshPro>();
-        baseButton.gameObject.SetActive(false);
-        // シーン切替時に破棄されないようにする
-        Object.DontDestroyOnLoad(baseButton);
-        baseButton.name = "EHR_SimpleButtonBase";
-        // 不要なコンポーネントを無効化
-        Object.Destroy(baseButton.GetComponent<AspectPosition>());
+        BaseButton = Object.Instantiate(passiveButton);
+        var label = BaseButton.transform.Find("FontPlacer/Text_TMP").GetComponent<TextMeshPro>();
+        BaseButton.gameObject.SetActive(false);
+
+        Object.DontDestroyOnLoad(BaseButton);
+        BaseButton.name = "EHR_SimpleButtonBase";
+
+        Object.Destroy(BaseButton.GetComponent<AspectPosition>());
         label.DestroyTranslator();
         label.fontSize = label.fontSizeMax = label.fontSizeMin = 3.5f;
         label.enableWordWrapping = false;
         label.text = "EHR SIMPLE BUTTON BASE";
-        // 当たり判定がズレてるのを直す
-        var buttonCollider = baseButton.GetComponent<BoxCollider2D>();
+
+        var buttonCollider = BaseButton.GetComponent<BoxCollider2D>();
         buttonCollider.offset = new(0f, 0f);
-        baseButton.OnClick = new();
+        BaseButton.OnClick = new();
     }
 
-    public static bool IsNullOrDestroyed(SimpleButton button) => button == null || button.Button == null;
+/*
+    public static bool IsNullOrDestroyed(SimpleButton button)
+    {
+        return button == null || button.Button == null;
+    }
+*/
 }

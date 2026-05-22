@@ -6,11 +6,11 @@ using UnityEngine;
 
 namespace EHR;
 
-static class TargetArrow
+internal static class TargetArrow
 {
-    static readonly Dictionary<ArrowInfo, string> TargetArrows = [];
+    private static readonly Dictionary<ArrowInfo, string> TargetArrows = [];
 
-    static readonly string[] Arrows =
+    private static readonly string[] Arrows =
     [
         "↑",
         "↗",
@@ -45,13 +45,16 @@ static class TargetArrow
     }
 
     /// <summary>
-    /// Register a new target arrow object
+    ///     Register a new target arrow object
     /// </summary>
     /// <param name="seer"></param>
     /// <param name="target"></param>
     public static void Add(byte seer, byte target)
     {
-        var arrowInfo = new ArrowInfo(seer, target);
+        if (Main.PlayerStates.TryGetValue(seer, out var state) && state.SubRoles.Contains(CustomRoles.Blind)) return;
+        
+        ArrowInfo arrowInfo = new(seer, target);
+
         if (!TargetArrows.Any(a => a.Key.Equals(arrowInfo)))
         {
             TargetArrows[arrowInfo] = "・";
@@ -61,41 +64,37 @@ static class TargetArrow
     }
 
     /// <summary>
-    /// Delete target
+    ///     Delete target
     /// </summary>
     /// <param name="seer"></param>
     /// <param name="target"></param>
     public static void Remove(byte seer, byte target)
     {
-        var arrowInfo = new ArrowInfo(seer, target);
-        var removeList = new List<ArrowInfo>(TargetArrows.Keys.Where(k => k.Equals(arrowInfo)));
-        foreach (ArrowInfo a in removeList.ToArray())
-        {
-            TargetArrows.Remove(a);
-        }
+        ArrowInfo arrowInfo = new(seer, target);
+        List<ArrowInfo> removeList = new(TargetArrows.Keys.Where(k => k.Equals(arrowInfo)));
+        if (removeList.Count == 0) return;
+        removeList.ForEach(a => TargetArrows.Remove(a));
 
         Utils.SendRPC(CustomRPC.Arrow, true, 2, seer, target);
         Logger.Info($"Removed target arrow: {seer} ({seer.GetPlayer()?.GetRealName()}) => {target} ({target.GetPlayer()?.GetRealName()})", "TargetArrow");
     }
 
     /// <summary>
-    /// Delete all targets for the specified seer
+    ///     Delete all targets for the specified seer
     /// </summary>
     /// <param name="seer"></param>
     public static void RemoveAllTarget(byte seer)
     {
-        var removeList = new List<ArrowInfo>(TargetArrows.Keys.Where(k => k.From == seer));
-        foreach (ArrowInfo arrowInfo in removeList.ToArray())
-        {
-            TargetArrows.Remove(arrowInfo);
-        }
+        List<ArrowInfo> removeList = new(TargetArrows.Keys.Where(k => k.From == seer));
+        if (removeList.Count == 0) return;
+        removeList.ForEach(a => TargetArrows.Remove(a));
 
         Utils.SendRPC(CustomRPC.Arrow, true, 3, seer);
         Logger.Info($"Removed all target arrows for {seer} ({seer.GetPlayer()?.GetRealName()})", "TargetArrow");
     }
 
     /// <summary>
-    /// Get all visible target arrows for the specified seer to the specified target(s)
+    ///     Get all visible target arrows for the specified seer to the specified target(s)
     /// </summary>
     /// <param name="seer"></param>
     /// <param name="targets"></param>
@@ -106,34 +105,44 @@ static class TargetArrow
     }
 
     /// <summary>
-    /// Get all visible target arrows for the specified seer
+    ///     Get all visible target arrows for the specified seer
     /// </summary>
     /// <param name="seer"></param>
     /// <returns></returns>
-    public static string GetAllArrows(PlayerControl seer)
+    public static string GetAllArrows(byte seer)
     {
-        return TargetArrows.Keys.Where(ai => ai.From == seer.PlayerId).Aggregate(string.Empty, (current, arrowInfo) => current + TargetArrows[arrowInfo]);
+        return TargetArrows.Keys.Where(ai => ai.From == seer).Aggregate(string.Empty, (current, arrowInfo) => current + TargetArrows[arrowInfo]);
     }
 
+    private static readonly List<ArrowInfo> ArrowList = [];
     /// <summary>
-    /// Check target arrow every FixedUpdate
-    /// Issue NotifyRoles when there are updates
+    ///     Check target arrow every FixedUpdate
+    ///     Issue NotifyRoles when there are updates
     /// </summary>
     /// <param name="seer"></param>
     public static void OnFixedUpdate(PlayerControl seer)
     {
         if (!GameStates.IsInTask) return;
 
-        var seerIsDead = !seer.IsAlive();
+        bool seerIsDead = !seer.IsAlive();
 
-        var arrowList = new List<ArrowInfo>(TargetArrows.Keys.Where(a => a.From == seer.PlayerId));
-        if (arrowList.Count == 0) return;
+        ArrowList.Clear();
+        foreach (var arrowInfo in TargetArrows.Keys)
+        {
+            if (arrowInfo.From == seer.PlayerId)
+                ArrowList.Add(arrowInfo);
+        }
+        int arrowCount = ArrowList.Count;
+        if (arrowCount == 0) return;
 
         var update = false;
-        foreach (ArrowInfo arrowInfo in arrowList.ToArray())
+
+        for (int arrowId = 0; arrowId < arrowCount; arrowId++)
         {
-            var targetId = arrowInfo.To;
-            var target = Utils.GetPlayerById(targetId);
+            ArrowInfo arrowInfo = ArrowList[arrowId];
+            byte targetId = arrowInfo.To;
+            PlayerControl target = Utils.GetPlayerById(targetId);
+
             if (seerIsDead || (!target.IsAlive() && !seer.Is(CustomRoles.Spiritualist)))
             {
                 TargetArrows.Remove(arrowInfo);
@@ -142,8 +151,9 @@ static class TargetArrow
             }
 
             // Take the direction vector of the target
-            var dir = target.transform.position - seer.transform.position;
+            Vector3 dir = target.transform.position - seer.transform.position;
             int index;
+
             if (dir.magnitude < 2)
             {
                 // Display a dot when close
@@ -155,11 +165,12 @@ static class TargetArrow
                 // Bottom is 0 degrees, left side is +180, right side is -180
                 // Adding 180 degrees clockwise with top being 0 degrees
                 // Add 45/2 to make index in 45 degree units
-                var angle = Vector3.SignedAngle(Vector3.down, dir, Vector3.back) + 180 + 22.5;
-                index = ((int)(angle / 45)) % 8;
+                double angle = Vector3.SignedAngle(Vector3.down, dir, Vector3.back) + 180 + 22.5;
+                index = (int)(angle / 45) % 8;
             }
 
-            var arrow = Arrows[index];
+            string arrow = Arrows[index];
+
             if (TargetArrows[arrowInfo] != arrow)
             {
                 TargetArrows[arrowInfo] = arrow;
@@ -167,13 +178,10 @@ static class TargetArrow
             }
         }
 
-        if (update)
-        {
-            Utils.NotifyRoles(SpecifySeer: seer, ForceLoop: false, SpecifyTarget: seer);
-        }
+        if (update) Utils.NotifyRoles(SpecifySeer: seer, ForceLoop: false, SpecifyTarget: seer);
     }
 
-    class ArrowInfo(byte from, byte to)
+    private class ArrowInfo(byte from, byte to)
     {
         public readonly byte From = from;
         public readonly byte To = to;

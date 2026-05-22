@@ -1,6 +1,4 @@
 ﻿using System;
-using System.IO;
-using static EHR.Translator;
 
 namespace EHR;
 
@@ -12,18 +10,17 @@ public static class AddSteamID
     {
         try
         {
+            if (OperatingSystem.IsAndroid()) return;
+            
             if (!File.Exists(FilePath))
             {
                 Logger.Warn("Creating a new steam_appid.txt file", "AddSteamID");
                 File.Create(FilePath).Close();
                 File.WriteAllText(FilePath, "945360");
 
-                ModUpdater.ShowPopup(GetString("AppIDAdded"), StringNames.Close, true);
+                ModUpdater.ShowPopup(Translator.GetString("AppIDAdded"), StringNames.Close, true);
             }
         }
-        catch (Exception e)
-        {
-            Utils.ThrowException(e);
-        }
+        catch (Exception e) { Utils.ThrowException(e); }
     }
 }

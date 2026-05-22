@@ -13,27 +13,27 @@ public class OptionBackupData
     {
         AllValues = new(32);
 
-        foreach (var name in Enum.GetValues<ByteOptionNames>())
+        foreach (ByteOptionNames name in Enum.GetValues<ByteOptionNames>())
         {
-            if (option.TryGetByte(name, out var value))
+            if (option.TryGetByte(name, out byte value))
                 AllValues.Add(new ByteOptionBackupValue(name, value));
         }
 
-        foreach (var name in Enum.GetValues<BoolOptionNames>())
+        foreach (BoolOptionNames name in Enum.GetValues<BoolOptionNames>())
         {
-            if (option.TryGetBool(name, out var value) && name != BoolOptionNames.GhostsDoTasks)
+            if (option.TryGetBool(name, out bool value) && name is not BoolOptionNames.GhostsDoTasks and not BoolOptionNames.Roles)
                 AllValues.Add(new BoolOptionBackupValue(name, value));
         }
 
-        foreach (var name in Enum.GetValues<FloatOptionNames>())
+        foreach (FloatOptionNames name in Enum.GetValues<FloatOptionNames>())
         {
-            if (option.TryGetFloat(name, out var value))
+            if (option.TryGetFloat(name, out float value))
                 AllValues.Add(new FloatOptionBackupValue(name, value));
         }
 
-        foreach (var name in Enum.GetValues<Int32OptionNames>())
+        foreach (Int32OptionNames name in Enum.GetValues<Int32OptionNames>())
         {
-            if (option.TryGetInt(name, out var value))
+            if (option.TryGetInt(name, out int value))
                 AllValues.Add(new IntOptionBackupValue(name, value));
         }
 
@@ -42,11 +42,8 @@ public class OptionBackupData
         // Since TryGetUInt is not implemented, get it separately
         AllValues.Add(new UIntOptionBackupValue(UInt32OptionNames.Keywords, (uint)option.Keywords));
 
-        RoleTypes[] array = [RoleTypes.Scientist, RoleTypes.Engineer, RoleTypes.GuardianAngel, RoleTypes.Shapeshifter, RoleTypes.Noisemaker, RoleTypes.Phantom, RoleTypes.Tracker];
-        foreach (RoleTypes role in array)
-        {
-            AllValues.Add(new RoleRateBackupValue(role, option.RoleOptions.GetNumPerGame(role), option.RoleOptions.GetChancePerGame(role)));
-        }
+        RoleTypes[] array = [RoleTypes.Scientist, RoleTypes.Engineer, RoleTypes.GuardianAngel, RoleTypes.Shapeshifter, RoleTypes.Noisemaker, RoleTypes.Phantom, RoleTypes.Tracker, RoleTypes.Viper, RoleTypes.Detective];
+        foreach (RoleTypes role in array) AllValues.Add(new RoleRateBackupValue(role, option.RoleOptions.GetNumPerGame(role), option.RoleOptions.GetChancePerGame(role)));
     }
 
     public IGameOptions Restore(IGameOptions option)
@@ -55,19 +52,38 @@ public class OptionBackupData
         return option;
     }
 
-    public byte GetByte(ByteOptionNames name) => Get<ByteOptionNames, byte>(name);
-    public bool GetBool(BoolOptionNames name) => Get<BoolOptionNames, bool>(name);
-    public float GetFloat(FloatOptionNames name) => Get<FloatOptionNames, float>(name);
-    public int GetInt(Int32OptionNames name) => Get<Int32OptionNames, int>(name);
-    public uint GetUInt(UInt32OptionNames name) => Get<UInt32OptionNames, uint>(name);
+    public byte GetByte(ByteOptionNames name)
+    {
+        return Get<ByteOptionNames, byte>(name);
+    }
+
+    public bool GetBool(BoolOptionNames name)
+    {
+        return Get<BoolOptionNames, bool>(name);
+    }
+
+    public float GetFloat(FloatOptionNames name)
+    {
+        return Get<FloatOptionNames, float>(name);
+    }
+
+    public int GetInt(Int32OptionNames name)
+    {
+        return Get<Int32OptionNames, int>(name);
+    }
+
+    public uint GetUInt(UInt32OptionNames name)
+    {
+        return Get<UInt32OptionNames, uint>(name);
+    }
 
     public TValue Get<TKey, TValue>(TKey name)
         where TKey : Enum
     {
-        var value = AllValues
+        OptionBackupValueBase<TKey, TValue> value = AllValues
             .OfType<OptionBackupValueBase<TKey, TValue>>()
             .FirstOrDefault(val => val.OptionName.Equals(name));
 
-        return value == null ? default : value.Value;
+        return value == null ? default(TValue) : value.Value;
     }
 }

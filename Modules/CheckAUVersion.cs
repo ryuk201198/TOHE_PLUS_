@@ -10,18 +10,15 @@ public static class VersionChecker
 
     public static void Check()
     {
-        var AmongUsVersion = Version.Parse(Application.version);
+        Version AmongUsVersion = Version.Parse(Application.version);
         Logger.Info($" {AmongUsVersion}", "Among Us Version Check");
 
-        var SupportedVersion = Version.Parse(Main.SupportedAUVersion);
+        Version SupportedVersion = Version.Parse(Main.SupportedAUVersion);
         Logger.Info($" {SupportedVersion}", "Supported Version Check");
 
         IsSupported = AmongUsVersion >= SupportedVersion;
         Logger.Info($" {IsSupported}", "Version Is Supported?");
 
-        if (!IsSupported)
-        {
-            ErrorText.Instance.AddError(ErrorCode.UnsupportedVersion);
-        }
+        if (!IsSupported) ErrorText.Instance.AddError(ErrorCode.UnsupportedVersion);
     }
 }

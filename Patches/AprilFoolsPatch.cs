@@ -1,36 +1,41 @@
 ﻿using HarmonyLib;
+using Il2CppSystem;
 using static CosmeticsLayer;
 using Action = Il2CppSystem.Action;
 
 namespace EHR.Patches;
 
-[HarmonyPatch(typeof(AprilFoolsMode), nameof(AprilFoolsMode.ShouldShowAprilFoolsToggle))]
-public static class ShouldShowTogglePatch
-{
-    public static void Postfix(ref bool __result)
-    {
-        __result = false;
-    }
-}
-
+//[HarmonyPatch(typeof(AprilFoolsMode), nameof(AprilFoolsMode.ShouldShowAprilFoolsToggle))]
+//public static class ShouldShowTogglePatch
+//{
+//    public static void Postfix(ref bool __result)
+//    {
+//        __result = false;
+//    }
+//}
 [HarmonyPatch(typeof(NormalGameManager), nameof(NormalGameManager.GetBodyType))]
 public static class GetNormalBodyTypePatch
 {
     public static void Postfix(ref PlayerBodyTypes __result)
     {
-        if (Main.HorseMode.Value)
+        try
         {
-            __result = PlayerBodyTypes.Horse;
-            return;
+            if (Main.HorseMode.Value || AprilFoolsMode.ShouldHorseAround())
+            {
+                __result = PlayerBodyTypes.Horse;
+                return;
+            }
+            if (Main.LongMode.Value || AprilFoolsMode.ShouldLongAround())
+            {
+                __result = PlayerBodyTypes.Long;
+                return;
+            }
+            if (Main.ClassicMode.Value || AprilFoolsMode.ShouldClassicMode())
+            {
+                __result = PlayerBodyTypes.Classic;
+            }
         }
-
-        if (Main.LongMode.Value)
-        {
-            __result = PlayerBodyTypes.Long;
-            return;
-        }
-
-        __result = PlayerBodyTypes.Normal;
+        catch { }
     }
 }
 
@@ -43,54 +48,51 @@ public static class GetHnsBodyTypePatch
         {
             if (player == null || player.Data == null || player.Data.Role == null)
             {
-                if (Main.HorseMode.Value)
+                if (Main.HorseMode.Value || AprilFoolsMode.ShouldHorseAround())
                 {
                     __result = PlayerBodyTypes.Horse;
                     return;
                 }
-
-                if (Main.LongMode.Value)
+                if (Main.LongMode.Value || AprilFoolsMode.ShouldLongAround())
                 {
                     __result = PlayerBodyTypes.Long;
                     return;
                 }
-
+                if (Main.ClassicMode.Value || AprilFoolsMode.ShouldClassicMode())
+                {
+                    __result = PlayerBodyTypes.Classic;
+                    return;
+                }
                 __result = PlayerBodyTypes.Normal;
             }
-            else if (Main.HorseMode.Value)
+            else if (Main.HorseMode.Value || AprilFoolsMode.ShouldHorseAround())
             {
                 if (player.Data.Role.IsImpostor)
                 {
                     __result = PlayerBodyTypes.Normal;
                     return;
                 }
-
                 __result = PlayerBodyTypes.Horse;
             }
-            else if (Main.LongMode.Value)
+            else if (Main.LongMode.Value || AprilFoolsMode.ShouldLongAround())
             {
                 if (player.Data.Role.IsImpostor)
                 {
                     __result = PlayerBodyTypes.LongSeeker;
                     return;
                 }
-
                 __result = PlayerBodyTypes.Long;
             }
-            else
+            else if (Main.ClassicMode.Value || AprilFoolsMode.ShouldClassicMode())
             {
                 if (player.Data.Role.IsImpostor)
                 {
                     __result = PlayerBodyTypes.Seeker;
-                    return;
                 }
-
-                __result = PlayerBodyTypes.Normal;
+                __result = PlayerBodyTypes.Classic;
             }
         }
-        catch
-        {
-        }
+        catch { }
     }
 }
 
@@ -103,14 +105,14 @@ public static class LongBoiPatches
     {
         try
         {
+            if (!AprilFoolsMode.ShouldLongAround() && !Main.LongMode.Value) return false;
+
             __instance.cosmeticLayer.OnSetBodyAsGhost += (Action)__instance.SetPoolableGhost;
-            __instance.cosmeticLayer.OnColorChange += (Il2CppSystem.Action<int>)__instance.SetHeightFromColor;
-            __instance.cosmeticLayer.OnCosmeticSet += (Il2CppSystem.Action<string, int, CosmeticKind>)__instance.OnCosmeticSet;
+            __instance.cosmeticLayer.OnColorChange += (Action<int>)__instance.SetHeightFromColor;
+            __instance.cosmeticLayer.OnCosmeticSet += (Action<string, int, CosmeticKind>)__instance.OnCosmeticSet;
             __instance.gameObject.layer = 8;
         }
-        catch
-        {
-        }
+        catch { }
 
         return false;
     }
@@ -121,26 +123,26 @@ public static class LongBoiPatches
     {
         try
         {
-            __instance.ShouldLongAround = true;
-            if (__instance.hideCosmeticsQC)
+            if (!AprilFoolsMode.ShouldLongAround() && !Main.LongMode.Value)
             {
-                __instance.cosmeticLayer.SetHatVisorVisible(false);
+                __instance.ShouldLongAround = false;
+                __instance.headSprite.gameObject.SetActive(false);
+                __instance.neckSprite.gameObject.SetActive(false);
+                __instance.foregroundNeckSprite.gameObject.SetActive(false);
+                return false;
             }
+            __instance.ShouldLongAround = true;
+            if (__instance.hideCosmeticsQC) __instance.cosmeticLayer.SetHatVisorVisible(false);
 
             __instance.SetupNeckGrowth();
+
             if (__instance.isExiledPlayer)
             {
-                ShipStatus instance = ShipStatus.Instance;
-                if (instance == null || instance.Type != ShipStatus.MapType.Fungle)
-                {
-                    __instance.cosmeticLayer.AdjustCosmeticRotations(-17.75f);
-                }
+                var instance = ShipStatus.Instance;
+                if (instance == null || instance.Type != ShipStatus.MapType.Fungle) __instance.cosmeticLayer.AdjustCosmeticRotations(-17.75f);
             }
 
-            if (!__instance.isPoolablePlayer)
-            {
-                __instance.cosmeticLayer.ValidateCosmetics();
-            }
+            if (!__instance.isPoolablePlayer) __instance.cosmeticLayer.ValidateCosmetics();
 
             if (__instance.myPlayerControl)
             {
@@ -148,11 +150,16 @@ public static class LongBoiPatches
                 __instance.SetHeightFromColor(__instance.myPlayerControl.Data.DefaultOutfit.ColorId);
             }
         }
-        catch
-        {
-        }
+        catch { }
 
         return false;
+    }
+
+    [HarmonyPatch(nameof(LongBoiPlayerBody.SetHeightFromColor))]
+    [HarmonyPrefix]
+    public static bool SetHeightFromColor_Prefix(int colorIndex)
+    {
+        return colorIndex != byte.MaxValue;
     }
 
     [HarmonyPatch(nameof(LongBoiPlayerBody.SetHeighFromDistanceHnS))]
@@ -161,12 +168,10 @@ public static class LongBoiPatches
     {
         try
         {
-            __instance.targetHeight = distance / 10f + 0.5f;
+            __instance.targetHeight = (distance / 10f) + 0.5f;
             __instance.SetupNeckGrowth(true);
         }
-        catch
-        {
-        }
+        catch { }
 
         return false;
     }

@@ -3,7 +3,7 @@ using HarmonyLib;
 namespace EHR;
 
 [HarmonyPatch(typeof(LogicGameFlowNormal), nameof(LogicGameFlowNormal.IsGameOverDueToDeath))]
-class DontBlackoutPatch
+internal class DontBlackoutPatch
 {
     public static void Postfix(ref bool __result)
     {

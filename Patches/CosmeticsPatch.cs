@@ -1,17 +1,16 @@
 ﻿using HarmonyLib;
 
-namespace EHR.Patches
+namespace EHR.Patches;
+
+public static class CosmeticsPatch
 {
-    public static class CosmeticsPatch
+    [HarmonyPatch(typeof(HatManager), nameof(HatManager.CheckLongModeValidCosmetic))]
+    private class CheckLongModeValidCosmeticPatch
     {
-        [HarmonyPatch(typeof(HatManager), nameof(HatManager.CheckLongModeValidCosmetic))]
-        class CheckLongModeValidCosmeticPatch
+        public static bool Prefix(ref bool __result)
         {
-            public static bool Prefix(ref bool __result)
-            {
-                __result = true;
-                return false;
-            }
+            __result = true;
+            return false;
         }
     }
 }

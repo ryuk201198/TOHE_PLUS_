@@ -1,17 +1,19 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using EHR.Neutral;
+using EHR.Roles;
 using HarmonyLib;
+using Hazel;
+using Il2CppInterop.Runtime.InteropTypes.Arrays;
 using UnityEngine;
 
 namespace EHR;
 
-//参考元 : https://github.com/ykundesu/SuperNewRoles/blob/master/SuperNewRoles/Mode/SuperHostRoles/BlockTool.cs
-static class DisableDevice
+// Reference: https://github.com/ykundesu/SuperNewRoles/blob/master/SuperNewRoles/Mode/SuperHostRoles/BlockTool.cs
+internal static class DisableDevice
 {
-    private static readonly List<byte> DesyncComms = [];
-    private static int frame;
+    public static readonly List<byte> DesyncComms = [];
+    private static int Frame;
 
     public static readonly Dictionary<string, Vector2> DevicePos = new()
     {
@@ -30,119 +32,132 @@ static class DisableDevice
         ["AirshipCamera"] = new(8.10f, -9.63f),
         ["AirshipVital"] = new(25.24f, -7.94f),
         ["FungleCamera"] = new(6.20f, 0.10f),
-        ["FungleVital"] = new(-2.50f, -9.80f)
+        ["FungleVital"] = new(-2.50f, -9.80f),
+        ["SubmergedVital"] = new(5f, 32.54f),
+        ["SubmergedLeftAdmin"] = new(-9.45f, 10.16f),
+        ["SubmergedRightAdmin"] = new(-7.07f, 10.16f),
+        ["SubmergedCamera"] = new(-3.41f, -34.56f)
     };
 
-    public static bool DoDisable => Options.DisableDevices.GetBool();
+    private static bool DoDisable => Options.DisableDevices.GetBool();
 
     public static float UsableDistance => Main.CurrentMap switch
     {
         MapNames.Skeld => 1.8f,
-        MapNames.Mira => 2.4f,
+        MapNames.MiraHQ => 2.4f,
         MapNames.Polus => 1.8f,
         MapNames.Dleks => 1.5f,
         MapNames.Airship => 1.8f,
         MapNames.Fungle => 1.8f,
-        _ => 0.0f
+        _ => 2f
     };
 
-    public static void FixedUpdate()
+    public static void FixedUpdate(PlayerControl pc)
     {
-        frame = frame == 3 ? 0 : ++frame;
-        if (frame != 0) return;
+        Frame = Frame == 3 ? 0 : ++Frame;
+        if (Frame != 0) return;
+        if (pc.IsModdedClient()) return;
 
-        var rogueForce = Rogue.On && Main.PlayerStates.Values.Any(x => x.Role is Rogue { DisableDevices: true });
+        bool rogueForce = false;
+        if (Rogue.On)
+            foreach (var ps in Main.PlayerStates.Values)
+            {
+                var role = ps.Role;
+                if (role is Rogue { DisableDevices: true })
+                {
+                    rogueForce = true;
+                    break;
+                }
+            }
 
         if (!DoDisable && !rogueForce) return;
-        foreach (PlayerControl pc in Main.AllPlayerControls)
+
+        try
         {
-            try
+            var doComms = false;
+            var mapId = Main.NormalOptions.MapId;
+            Vector2 PlayerPos = pc.Pos();
+
+            bool ignore = (Options.DisableDevicesIgnoreImpostors.GetBool() && pc.Is(CustomRoleTypes.Impostor)) ||
+                          (Options.DisableDevicesIgnoreNeutrals.GetBool() && pc.Is(CustomRoleTypes.Neutral)) ||
+                          (Options.DisableDevicesIgnoreCrewmates.GetBool() && pc.Is(CustomRoleTypes.Crewmate)) ||
+                          (Options.DisableDevicesIgnoreAfterAnyoneDied.GetBool() && GameStates.AlreadyDied);
+
+            ignore &= !rogueForce;
+
+            if (pc.IsAlive() && !Utils.IsActive(SystemTypes.Comms))
             {
-                if (pc.IsModClient()) continue;
-
-                bool doComms = false;
-                Vector2 PlayerPos = pc.Pos();
-                bool ignore = (Options.DisableDevicesIgnoreImpostors.GetBool() && pc.Is(CustomRoleTypes.Impostor)) ||
-                              (Options.DisableDevicesIgnoreNeutrals.GetBool() && pc.Is(CustomRoleTypes.Neutral)) ||
-                              (Options.DisableDevicesIgnoreCrewmates.GetBool() && pc.Is(CustomRoleTypes.Crewmate)) ||
-                              (Options.DisableDevicesIgnoreAfterAnyoneDied.GetBool() && GameStates.AlreadyDied);
-                ignore &= !rogueForce;
-
-                if (pc.IsAlive() && !Utils.IsActive(SystemTypes.Comms))
+                switch (mapId)
                 {
-                    switch (Main.NormalOptions.MapId)
-                    {
-                        case 0:
-                            if (Options.DisableSkeldAdmin.GetBool() || rogueForce)
-                                doComms |= Vector2.Distance(PlayerPos, DevicePos["SkeldAdmin"]) <= UsableDistance;
-                            if (Options.DisableSkeldCamera.GetBool() || rogueForce)
-                                doComms |= Vector2.Distance(PlayerPos, DevicePos["SkeldCamera"]) <= UsableDistance;
-                            break;
-                        case 1:
-                            if (Options.DisableMiraHQAdmin.GetBool() || rogueForce)
-                                doComms |= Vector2.Distance(PlayerPos, DevicePos["MiraHQAdmin"]) <= UsableDistance;
-                            if (Options.DisableMiraHQDoorLog.GetBool() || rogueForce)
-                                doComms |= Vector2.Distance(PlayerPos, DevicePos["MiraHQDoorLog"]) <= UsableDistance;
-                            break;
-                        case 2:
-                            if (Options.DisablePolusAdmin.GetBool() || rogueForce)
-                            {
-                                doComms |= Vector2.Distance(PlayerPos, DevicePos["PolusLeftAdmin"]) <= UsableDistance;
-                                doComms |= Vector2.Distance(PlayerPos, DevicePos["PolusRightAdmin"]) <= UsableDistance;
-                            }
+                    case 0:
+                        if (Options.DisableSkeldAdmin.GetBool() || rogueForce) doComms |= FastVector2.DistanceWithinRange(PlayerPos, DevicePos["SkeldAdmin"], UsableDistance);
+                        if (Options.DisableSkeldCamera.GetBool() || rogueForce) doComms |= FastVector2.DistanceWithinRange(PlayerPos, DevicePos["SkeldCamera"], UsableDistance);
+                        break;
+                    case 1:
+                        if (Options.DisableMiraHQAdmin.GetBool() || rogueForce) doComms |= FastVector2.DistanceWithinRange(PlayerPos, DevicePos["MiraHQAdmin"], UsableDistance);
+                        if (Options.DisableMiraHQDoorLog.GetBool() || rogueForce) doComms |= FastVector2.DistanceWithinRange(PlayerPos, DevicePos["MiraHQDoorLog"], UsableDistance);
+                        break;
+                    case 2:
+                        if (Options.DisablePolusAdmin.GetBool() || rogueForce)
+                        {
+                            doComms |= FastVector2.DistanceWithinRange(PlayerPos, DevicePos["PolusLeftAdmin"], UsableDistance);
+                            doComms |= FastVector2.DistanceWithinRange(PlayerPos, DevicePos["PolusRightAdmin"], UsableDistance);
+                        }
 
-                            if (Options.DisablePolusCamera.GetBool() || rogueForce)
-                                doComms |= Vector2.Distance(PlayerPos, DevicePos["PolusCamera"]) <= UsableDistance;
-                            if (Options.DisablePolusVital.GetBool() || rogueForce)
-                                doComms |= Vector2.Distance(PlayerPos, DevicePos["PolusVital"]) <= UsableDistance;
-                            break;
-                        case 3:
-                            if (Options.DisableSkeldAdmin.GetBool() || rogueForce)
-                                doComms |= Vector2.Distance(PlayerPos, DevicePos["DleksAdmin"]) <= UsableDistance;
-                            if (Options.DisableSkeldCamera.GetBool() || rogueForce)
-                                doComms |= Vector2.Distance(PlayerPos, DevicePos["DleksCamera"]) <= UsableDistance;
-                            break;
-                        case 4:
-                            if (Options.DisableAirshipCockpitAdmin.GetBool() || rogueForce)
-                                doComms |= Vector2.Distance(PlayerPos, DevicePos["AirshipCockpitAdmin"]) <= UsableDistance;
-                            if (Options.DisableAirshipRecordsAdmin.GetBool() || rogueForce)
-                                doComms |= Vector2.Distance(PlayerPos, DevicePos["AirshipRecordsAdmin"]) <= UsableDistance;
-                            if (Options.DisableAirshipCamera.GetBool() || rogueForce)
-                                doComms |= Vector2.Distance(PlayerPos, DevicePos["AirshipCamera"]) <= UsableDistance;
-                            if (Options.DisableAirshipVital.GetBool() || rogueForce)
-                                doComms |= Vector2.Distance(PlayerPos, DevicePos["AirshipVital"]) <= UsableDistance;
-                            break;
-                        case 5:
-                            if (Options.DisableFungleCamera.GetBool() || rogueForce)
-                                doComms |= Vector2.Distance(PlayerPos, DevicePos["FungleCamera"]) <= UsableDistance;
-                            if (Options.DisableFungleVital.GetBool() || rogueForce)
-                                doComms |= Vector2.Distance(PlayerPos, DevicePos["FungleVital"]) <= UsableDistance;
-                            break;
-                    }
-                }
-
-                doComms &= !ignore;
-                if (doComms && !pc.inVent)
-                {
-                    if (!DesyncComms.Contains(pc.PlayerId))
-                        DesyncComms.Add(pc.PlayerId);
-
-                    pc.RpcDesyncRepairSystem(SystemTypes.Comms, 128);
-                }
-                else if (!Utils.IsActive(SystemTypes.Comms) && DesyncComms.Contains(pc.PlayerId))
-                {
-                    DesyncComms.Remove(pc.PlayerId);
-                    pc.RpcDesyncRepairSystem(SystemTypes.Comms, 16);
-
-                    if (Main.NormalOptions.MapId is 1 or 5) // Mira HQ or The Fungle
-                        pc.RpcDesyncRepairSystem(SystemTypes.Comms, 17);
+                        if (Options.DisablePolusCamera.GetBool() || rogueForce) doComms |= FastVector2.DistanceWithinRange(PlayerPos, DevicePos["PolusCamera"], UsableDistance);
+                        if (Options.DisablePolusVital.GetBool() || rogueForce) doComms |= FastVector2.DistanceWithinRange(PlayerPos, DevicePos["PolusVital"], UsableDistance);
+                        break;
+                    case 3:
+                        if (Options.DisableSkeldAdmin.GetBool() || rogueForce) doComms |= FastVector2.DistanceWithinRange(PlayerPos, DevicePos["DleksAdmin"], UsableDistance);
+                        if (Options.DisableSkeldCamera.GetBool() || rogueForce) doComms |= FastVector2.DistanceWithinRange(PlayerPos, DevicePos["DleksCamera"], UsableDistance);
+                        break;
+                    case 4:
+                        if (Options.DisableAirshipCockpitAdmin.GetBool() || rogueForce) doComms |= FastVector2.DistanceWithinRange(PlayerPos, DevicePos["AirshipCockpitAdmin"], UsableDistance);
+                        if (Options.DisableAirshipRecordsAdmin.GetBool() || rogueForce) doComms |= FastVector2.DistanceWithinRange(PlayerPos, DevicePos["AirshipRecordsAdmin"], UsableDistance);
+                        if (Options.DisableAirshipCamera.GetBool() || rogueForce) doComms |= FastVector2.DistanceWithinRange(PlayerPos, DevicePos["AirshipCamera"], UsableDistance);
+                        if (Options.DisableAirshipVital.GetBool() || rogueForce) doComms |= FastVector2.DistanceWithinRange(PlayerPos, DevicePos["AirshipVital"], UsableDistance);
+                        break;
+                    case 5:
+                        if (Options.DisableFungleCamera.GetBool() || rogueForce) doComms |= FastVector2.DistanceWithinRange(PlayerPos, DevicePos["FungleCamera"], UsableDistance);
+                        if (Options.DisableFungleVital.GetBool() || rogueForce) doComms |= FastVector2.DistanceWithinRange(PlayerPos, DevicePos["FungleVital"], UsableDistance);
+                        break;
                 }
             }
-            catch (Exception ex)
+
+            doComms &= !ignore;
+
+            var hasValue = false;
+            var activateSabComms = false;
+
+            if (doComms && !pc.inVent)
             {
-                Logger.Exception(ex, "DisableDevice");
+                if (!DesyncComms.Contains(pc.PlayerId)) DesyncComms.Add(pc.PlayerId);
+                hasValue = true;
+                activateSabComms = true;
             }
+            else if (!Utils.IsActive(SystemTypes.Comms) && DesyncComms.Contains(pc.PlayerId))
+            {
+                DesyncComms.Remove(pc.PlayerId);
+                hasValue = true;
+            }
+
+            if (!hasValue) return;
+
+            var sender = CustomRpcSender.Create("DisableDevice.FixedUpdate", SendOption.Reliable, log: false);
+
+            if (activateSabComms)
+                sender.RpcDesyncUpdateSystem(pc, SystemTypes.Comms, 128);
+            else
+            {
+                sender.RpcDesyncUpdateSystem(pc, SystemTypes.Comms, 16);
+
+                if (mapId is 1 or 5) // Mira HQ or The Fungle
+                    sender.RpcDesyncUpdateSystem(pc, SystemTypes.Comms, 17);
+            }
+
+            sender.SendMessage();
         }
+        catch (Exception ex) { Logger.Exception(ex, "DisableDevice"); }
     }
 }
 
@@ -151,47 +166,45 @@ public class RemoveDisableDevicesPatch
 {
     public static void Postfix()
     {
-        var rogueForce = Rogue.On && Main.PlayerStates.Values.Any(x => x.Role is Rogue { DisableDevices: true });
+        bool rogueForce = Rogue.On && Main.PlayerStates.Values.Any(x => x.Role is Rogue { DisableDevices: true });
         if (!Options.DisableDevices.GetBool() && !rogueForce) return;
+
         UpdateDisableDevices();
     }
 
     public static void UpdateDisableDevices()
     {
-        var player = PlayerControl.LocalPlayer;
-        var rogueForce = Rogue.On && Main.PlayerStates.Values.Any(x => x.Role is Rogue { DisableDevices: true });
+        PlayerControl player = PlayerControl.LocalPlayer;
+        bool rogueForce = Rogue.On && Main.PlayerStates.Values.Any(x => x.Role is Rogue { DisableDevices: true });
+
         bool ignore = player.Is(CustomRoles.GM) ||
                       !player.IsAlive() ||
                       (Options.DisableDevicesIgnoreImpostors.GetBool() && player.Is(CustomRoleTypes.Impostor)) ||
                       (Options.DisableDevicesIgnoreNeutrals.GetBool() && player.Is(CustomRoleTypes.Neutral)) ||
                       (Options.DisableDevicesIgnoreCrewmates.GetBool() && player.Is(CustomRoleTypes.Crewmate)) ||
                       (Options.DisableDevicesIgnoreAfterAnyoneDied.GetBool() && GameStates.AlreadyDied);
+
         ignore &= !rogueForce;
-        var admins = Object.FindObjectsOfType<MapConsole>(true);
-        var consoles = Object.FindObjectsOfType<SystemConsole>(true);
+        Il2CppArrayBase<MapConsole> admins = Object.FindObjectsOfType<MapConsole>(true);
+        Il2CppArrayBase<SystemConsole> consoles = Object.FindObjectsOfType<SystemConsole>(true);
         if (admins == null || consoles == null) return;
+
         switch (Main.NormalOptions.MapId)
         {
             case 3:
             case 0:
-                if (Options.DisableSkeldAdmin.GetBool() || rogueForce)
-                    admins[0].gameObject.GetComponent<CircleCollider2D>().enabled = ignore;
-                if (Options.DisableSkeldCamera.GetBool() || rogueForce)
-                    consoles.DoIf(x => x.name == "SurvConsole", x => x.gameObject.GetComponent<PolygonCollider2D>().enabled = ignore);
+                if (Options.DisableSkeldAdmin.GetBool() || rogueForce) admins[0].gameObject.GetComponent<CircleCollider2D>().enabled = ignore;
+                if (Options.DisableSkeldCamera.GetBool() || rogueForce) consoles.DoIf(x => x.name == "SurvConsole", x => x.gameObject.GetComponent<PolygonCollider2D>().enabled = ignore);
                 break;
             case 1:
-                if (Options.DisableMiraHQAdmin.GetBool() || rogueForce)
-                    admins[0].gameObject.GetComponent<CircleCollider2D>().enabled = ignore;
-                if (Options.DisableMiraHQDoorLog.GetBool() || rogueForce)
-                    consoles.DoIf(x => x.name == "SurvLogConsole", x => x.gameObject.GetComponent<BoxCollider2D>().enabled = ignore);
+                if (Options.DisableMiraHQAdmin.GetBool() || rogueForce) admins[0].gameObject.GetComponent<CircleCollider2D>().enabled = ignore;
+                if (Options.DisableMiraHQDoorLog.GetBool() || rogueForce) consoles.DoIf(x => x.name == "SurvLogConsole", x => x.gameObject.GetComponent<BoxCollider2D>().enabled = ignore);
+
                 break;
             case 2:
-                if (Options.DisablePolusAdmin.GetBool() || rogueForce)
-                    admins.Do(x => x.gameObject.GetComponent<BoxCollider2D>().enabled = ignore);
-                if (Options.DisablePolusCamera.GetBool() || rogueForce)
-                    consoles.DoIf(x => x.name == "Surv_Panel", x => x.gameObject.GetComponent<BoxCollider2D>().enabled = ignore);
-                if (Options.DisablePolusVital.GetBool() || rogueForce)
-                    consoles.DoIf(x => x.name == "panel_vitals", x => x.gameObject.GetComponent<BoxCollider2D>().enabled = ignore);
+                if (Options.DisablePolusAdmin.GetBool() || rogueForce) admins.Do(x => x.gameObject.GetComponent<BoxCollider2D>().enabled = ignore);
+                if (Options.DisablePolusCamera.GetBool() || rogueForce) consoles.DoIf(x => x.name == "Surv_Panel", x => x.gameObject.GetComponent<BoxCollider2D>().enabled = ignore);
+                if (Options.DisablePolusVital.GetBool() || rogueForce) consoles.DoIf(x => x.name == "panel_vitals", x => x.gameObject.GetComponent<BoxCollider2D>().enabled = ignore);
                 break;
             case 4:
                 admins.Do(x =>
@@ -200,16 +213,13 @@ public class RemoveDisableDevicesPatch
                         (Options.DisableAirshipRecordsAdmin.GetBool() && x.name == "records_admin_map") || rogueForce)
                         x.gameObject.GetComponent<BoxCollider2D>().enabled = ignore;
                 });
-                if (Options.DisableAirshipCamera.GetBool() || rogueForce)
-                    consoles.DoIf(x => x.name == "task_cams", x => x.gameObject.GetComponent<BoxCollider2D>().enabled = ignore);
-                if (Options.DisableAirshipVital.GetBool() || rogueForce)
-                    consoles.DoIf(x => x.name == "panel_vitals", x => x.gameObject.GetComponent<CircleCollider2D>().enabled = ignore);
+
+                if (Options.DisableAirshipCamera.GetBool() || rogueForce) consoles.DoIf(x => x.name == "task_cams", x => x.gameObject.GetComponent<BoxCollider2D>().enabled = ignore);
+                if (Options.DisableAirshipVital.GetBool() || rogueForce) consoles.DoIf(x => x.name == "panel_vitals", x => x.gameObject.GetComponent<CircleCollider2D>().enabled = ignore);
                 break;
             case 5:
-                if (Options.DisableFungleCamera.GetBool() || rogueForce)
-                    consoles.DoIf(x => x.name == "BinocularsSecurityConsole", x => x.gameObject.GetComponent<PolygonCollider2D>().enabled = ignore);
-                if (Options.DisableFungleCamera.GetBool() || rogueForce)
-                    consoles.DoIf(x => x.name == "VitalsConsole", x => x.gameObject.GetComponent<BoxCollider2D>().enabled = ignore);
+                if (Options.DisableFungleCamera.GetBool() || rogueForce) consoles.DoIf(x => x.name == "BinocularsSecurityConsole", x => x.gameObject.GetComponent<PolygonCollider2D>().enabled = ignore);
+                if (Options.DisableFungleVital.GetBool() || rogueForce) consoles.DoIf(x => x.name == "VitalsConsole", x => x.gameObject.GetComponent<BoxCollider2D>().enabled = ignore);
                 break;
         }
     }

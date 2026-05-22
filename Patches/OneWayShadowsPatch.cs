@@ -12,6 +12,7 @@ public static class OneWayShadowsIsIgnoredPatch
             __result = true;
             return false;
         }
+
         return true;
     }
 }

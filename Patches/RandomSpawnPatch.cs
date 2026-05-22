@@ -1,66 +1,123 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using EHR.Impostor;
+using EHR.Roles;
 using HarmonyLib;
+using Hazel;
 using UnityEngine;
 
 namespace EHR;
 
-class RandomSpawn
+internal abstract class RandomSpawn
 {
-    public static void TP(CustomNetworkTransform nt, Vector2 location)
+    // Thanks: https://github.com/tukasa0001/TownOfHost/blob/main/Patches/RandomSpawnPatch.cs
+    [HarmonyPatch(typeof(CustomNetworkTransform), nameof(CustomNetworkTransform.HandleRpc))]
+    public class CustomNetworkTransformHandleRpcPatch
     {
-        //if (AmongUsClient.Instance.AmHost) nt.SnapTo(location);
-        //MessageWriter writer = AmongUsClient.Instance.StartRpcImmediately(nt.NetId, (byte)RpcCalls.SnapTo, SendOption.None);
-        //NetHelpers.WriteVector2(location, writer);
-        //writer.Write(nt.lastSequenceId);
-        //AmongUsClient.Instance.FinishRpcImmediately(writer);
-        Utils.TP(nt, location);
-    }
+        public static HashSet<byte> HasSpawned = [];
 
-    [HarmonyPatch(typeof(CustomNetworkTransform), nameof(CustomNetworkTransform.SnapTo), typeof(Vector2), typeof(ushort))]
-    public class CustomNetworkTransformPatch
-    {
-        public static Dictionary<byte, int> NumOfTP = [];
+        private static readonly HashSet<(int x, int y)> DecupleVanillaSpawnPositions =
+        [
+            (-7, 85),
+            (-7, -10),
+            (-70, -115),
+            (335, -15),
+            (200, 105),
+            (155, 0)
+        ];
 
-        public static void Postfix(CustomNetworkTransform __instance, [HarmonyArgument(0)] Vector2 position)
+        public static bool Prefix(CustomNetworkTransform __instance, [HarmonyArgument(0)] byte callId, [HarmonyArgument(1)] MessageReader reader)
         {
-            if (!AmongUsClient.Instance.AmHost) return;
-            if (position == new Vector2(-25f, 40f)) return;
-            if (GameStates.IsInTask)
+            if (!AmongUsClient.Instance.AmHost) return true;
+
+            if (!__instance.isActiveAndEnabled) return false;
+
+            if ((RpcCalls)callId == RpcCalls.SnapTo && Main.CurrentMap == MapNames.Airship)
             {
-                var player = Main.AllPlayerControls.FirstOrDefault(p => p.NetTransform == __instance);
-                if (player == null) return;
+                PlayerControl player = __instance.myPlayer;
 
-                if (player.Is(CustomRoles.GM)) return;
-
-                NumOfTP[player.PlayerId]++;
-
-                if (NumOfTP[player.PlayerId] == 2)
+                if (!HasSpawned.Contains(player.PlayerId))
                 {
-                    if (Main.NormalOptions.MapId != 4) return;
-                    player.RpcResetAbilityCooldown();
-                    if (Options.FixFirstKillCooldown.GetBool() && !MeetingStates.MeetingCalled) player.SetKillCooldown(Main.AllPlayerKillCooldown[player.PlayerId]);
-                    else if (Options.StartingKillCooldown.GetInt() != 10) player.SetKillCooldown(Options.StartingKillCooldown.GetInt());
-                    if (!Options.RandomSpawn.GetBool() && Options.CurrentGameMode == CustomGameMode.Standard) return;
-                    new AirshipSpawnMap().RandomTeleport(player);
-                    Penguin.OnSpawnAirship();
+                    Vector2 position;
+                    {
+                        MessageReader newReader = MessageReader.Get(reader);
+                        position = NetHelpers.ReadVector2(newReader);
+                        newReader.Recycle();
+                    }
+
+                    Logger.Info($"SnapTo: {player.GetRealName()}, ({position.x}, {position.y})", "RandomSpawn");
+
+                    if (IsAirshipVanillaSpawnPosition(position))
+                    {
+                        AirshipSpawn(player);
+                        return !Options.RandomSpawn.GetBool();
+                    }
                 }
             }
+
+            return true;
+        }
+
+        private static bool IsAirshipVanillaSpawnPosition(Vector2 position)
+        {
+            float decupleXFloat = position.x * 10f;
+            float decupleYFloat = position.y * 10f;
+            int decupleXInt = Mathf.RoundToInt(decupleXFloat);
+
+            if (Mathf.Abs(decupleXInt - decupleXFloat) >= 0.09f) return false;
+
+            int decupleYInt = Mathf.RoundToInt(decupleYFloat);
+            if (Mathf.Abs(decupleYInt - decupleYFloat) >= 0.09f) return false;
+
+            (int decupleXInt, int decupleYInt) decuplePosition = (decupleXInt, decupleYInt);
+            return DecupleVanillaSpawnPositions.Contains(decuplePosition);
+        }
+
+        private static void AirshipSpawn(PlayerControl player)
+        {
+            Logger.Info($"Spawn: {player.GetRealName()}", "RandomSpawn");
+
+            if (AmongUsClient.Instance.AmHost)
+            {
+                if (player.Is(CustomRoles.Penguin)) Penguin.OnSpawnAirship();
+
+                player.RpcResetAbilityCooldown();
+                if (Options.FixFirstKillCooldown.GetBool() && !MeetingStates.MeetingCalled) player.SetKillCooldown(Main.AllPlayerKillCooldown[player.PlayerId]);
+
+                if (Options.RandomSpawn.GetBool() || player.Is(CustomRoles.GM)) new AirshipSpawnMap().RandomTeleport(player);
+            }
+
+            HasSpawned.Add(player.PlayerId);
         }
     }
 
     public abstract class SpawnMap
     {
-        public virtual void RandomTeleport(PlayerControl player)
+        public abstract Dictionary<SystemTypes, Vector2> Positions { get; }
+
+        public void RandomTeleport(PlayerControl player)
         {
-            var spawn = GetLocation();
+            KeyValuePair<SystemTypes, Vector2> spawn = GetLocation();
             Logger.Info($"{player.Data.PlayerName} => {Translator.GetString(spawn.Key.ToString())} {spawn.Value}", "RandomSpawn");
-            player.TP(spawn.Value, log: false);
+            player.TP(spawn.Value, true, false);
         }
 
         protected abstract KeyValuePair<SystemTypes, Vector2> GetLocation();
+
+        public static SpawnMap GetSpawnMap()
+        {
+            return Main.CurrentMap switch
+            {
+                MapNames.Skeld => new SkeldSpawnMap(),
+                MapNames.MiraHQ => new MiraHQSpawnMap(),
+                MapNames.Polus => new PolusSpawnMap(),
+                MapNames.Dleks => new DleksSpawnMap(),
+                MapNames.Airship => new AirshipSpawnMap(),
+                MapNames.Fungle => new FungleSpawnMap(),
+                (MapNames)6 => new SubmergedSpawnMap(),
+                _ => throw new ArgumentOutOfRangeException(nameof(Main.CurrentMap), Main.CurrentMap, "Invalid map")
+            };
+        }
     }
 
     public class SkeldSpawnMap : SpawnMap
@@ -82,6 +139,8 @@ class RandomSpawn
             [SystemTypes.Reactor] = new(-20.5f, -5.5f),
             [SystemTypes.MedBay] = new(-9.0f, -4.0f)
         };
+
+        public override Dictionary<SystemTypes, Vector2> Positions => positions;
 
         protected override KeyValuePair<SystemTypes, Vector2> GetLocation()
         {
@@ -108,6 +167,8 @@ class RandomSpawn
             [SystemTypes.Office] = new(15.0f, 19.0f),
             [SystemTypes.Greenhouse] = new(17.8f, 23.0f)
         };
+
+        public override Dictionary<SystemTypes, Vector2> Positions => positions;
 
         protected override KeyValuePair<SystemTypes, Vector2> GetLocation()
         {
@@ -136,6 +197,8 @@ class RandomSpawn
             [SystemTypes.Specimens] = new(36.5f, -22.0f)
         };
 
+        public override Dictionary<SystemTypes, Vector2> Positions => positions;
+
         protected override KeyValuePair<SystemTypes, Vector2> GetLocation()
         {
             return positions.ToArray().OrderBy(_ => Guid.NewGuid()).Take(1).FirstOrDefault();
@@ -145,6 +208,8 @@ class RandomSpawn
     public class DleksSpawnMap : SpawnMap
     {
         public readonly Dictionary<SystemTypes, Vector2> positions = new SkeldSpawnMap().positions.ToDictionary(e => e.Key, e => new Vector2(-e.Value.x, e.Value.y));
+
+        public override Dictionary<SystemTypes, Vector2> Positions => positions;
 
         protected override KeyValuePair<SystemTypes, Vector2> GetLocation()
         {
@@ -177,6 +242,8 @@ class RandomSpawn
             [SystemTypes.Showers] = new(21.2f, -0.8f)
         };
 
+        public override Dictionary<SystemTypes, Vector2> Positions => positions;
+
         protected override KeyValuePair<SystemTypes, Vector2> GetLocation()
         {
             return Options.AirshipAdditionalSpawn.GetBool()
@@ -192,7 +259,7 @@ class RandomSpawn
             [SystemTypes.Outside] = new(-9.8f, 3.4f), // First Spawn
             [SystemTypes.Dropship] = new(-7.8f, 10.6f),
             [SystemTypes.Cafeteria] = new(-16.4f, 7.3f),
-            [SystemTypes.Balcony] = new(-15.6f, -1.8f), // Splash Zone
+            [SystemTypes.RecRoom] = new(-15.6f, -1.8f), // Splash Zone
             [SystemTypes.Beach] = new(-22.8f, -0.6f),
             [SystemTypes.Kitchen] = new(-15.5f, -7.5f),
             [SystemTypes.FishingDock] = new(-23.1f, -7.0f),
@@ -208,6 +275,38 @@ class RandomSpawn
             [SystemTypes.UpperEngine] = new(22.4f, 3.4f),
             [SystemTypes.Comms] = new(22.2f, 13.7f)
         };
+
+        public override Dictionary<SystemTypes, Vector2> Positions => positions;
+
+        protected override KeyValuePair<SystemTypes, Vector2> GetLocation()
+        {
+            return positions.ToArray().OrderBy(_ => Guid.NewGuid()).Take(1).FirstOrDefault();
+        }
+    }
+
+    public class SubmergedSpawnMap : SpawnMap
+    {
+        public readonly Dictionary<SystemTypes, Vector2> positions = new()
+        {
+            [(SystemTypes)SubmergedCompatibility.SubmergedSystemTypes.Filtration] = new(8.51f, -21.13f),
+            [SystemTypes.Electrical] = new(10.8f, -27.15f),
+            [SystemTypes.Storage] = new(2.55f, -34.73f),
+            [(SystemTypes)SubmergedCompatibility.SubmergedSystemTypes.LowerLobby] = new(6.53f, -39.44f),
+            [(SystemTypes)SubmergedCompatibility.SubmergedSystemTypes.Ballast] = new(-8.26f, -39.84f),
+            [SystemTypes.Security] = new(-4.23f, -33.38f),
+            [SystemTypes.Engine] = new(-12.58f, -27.83f),
+            [SystemTypes.Admin] = new(-9.96f, 10.95f),
+            [(SystemTypes)SubmergedCompatibility.SubmergedSystemTypes.Observatory] = new(-12.39f, 17.78f),
+            [SystemTypes.Lounge] = new(-6.43f, 14.11f),
+            [SystemTypes.MeetingRoom] = new(-1.85f, 12.32f),
+            [SystemTypes.Cafeteria] = new(-8.57f, 25.47f),
+            [(SystemTypes)SubmergedCompatibility.SubmergedSystemTypes.Research] = new(0.96f, 29.84f),
+            [SystemTypes.Medical] = new(6.17f, 31.38f),
+            [SystemTypes.Comms] = new(11.03f, 23.53f),
+            [(SystemTypes)SubmergedCompatibility.SubmergedSystemTypes.UpperLobby] = new(7.72f, 8.66f)
+        };
+
+        public override Dictionary<SystemTypes, Vector2> Positions => positions;
 
         protected override KeyValuePair<SystemTypes, Vector2> GetLocation()
         {

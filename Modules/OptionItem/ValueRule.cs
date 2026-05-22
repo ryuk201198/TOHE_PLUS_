@@ -4,41 +4,42 @@ namespace EHR;
 
 public abstract class ValueRule<T>(T minValue, T maxValue, T step)
 {
-    public T MinValue { get; protected set; } = minValue;
-    public T MaxValue { get; protected set; } = maxValue;
-    public T Step { get; protected set; } = step;
+    protected ValueRule((T, T, T) tuple)
+        : this(tuple.Item1, tuple.Item2, tuple.Item3) { }
 
-    public ValueRule((T, T, T) tuple)
-    : this(tuple.Item1, tuple.Item2, tuple.Item3)
-    { }
-
-    public abstract int RepeatIndex(int value);
-    public abstract T GetValueByIndex(int index);
-    public abstract int GetNearestIndex(T num);
+    public T MinValue { get; } = minValue;
+    public T MaxValue { get; } = maxValue;
+    public T Step { get; } = step;
 }
 
 public class IntegerValueRule : ValueRule<int>
 {
     public IntegerValueRule(int minValue, int maxValue, int step)
-    : base(minValue, maxValue, step) { }
+        : base(minValue, maxValue, step) { }
+
     public IntegerValueRule((int, int, int) tuple)
-    : base(tuple) { }
+        : base(tuple) { }
 
     public static implicit operator IntegerValueRule((int, int, int) tuple)
-        => new(tuple);
-
-    public override int RepeatIndex(int value)
     {
-        int MaxIndex = (MaxValue - MinValue) / Step;
-        value %= MaxIndex + 1;
-        if (value < 0) value = MaxIndex;
+        return new(tuple);
+    }
+
+    public virtual int RepeatIndex(int value)
+    {
+        int maxIndex = (MaxValue - MinValue) / Step;
+        value %= maxIndex + 1;
+        if (value < 0) value = maxIndex;
+
         return value;
     }
 
-    public override int GetValueByIndex(int index)
-        => RepeatIndex(index) * Step + MinValue;
+    public virtual int GetValueByIndex(int index)
+    {
+        return (RepeatIndex(index) * Step) + MinValue;
+    }
 
-    public override int GetNearestIndex(int num)
+    public virtual int GetNearestIndex(int num)
     {
         return (int)Math.Round((num - MinValue) / (float)Step);
     }
@@ -47,25 +48,31 @@ public class IntegerValueRule : ValueRule<int>
 public class FloatValueRule : ValueRule<float>
 {
     public FloatValueRule(float minValue, float maxValue, float step)
-    : base(minValue, maxValue, step) { }
+        : base(minValue, maxValue, step) { }
+
     public FloatValueRule((float, float, float) tuple)
-    : base(tuple) { }
+        : base(tuple) { }
 
     public static implicit operator FloatValueRule((float, float, float) tuple)
-        => new(tuple);
-
-    public override int RepeatIndex(int value)
     {
-        int MaxIndex = (int)((MaxValue - MinValue) / Step);
-        value %= MaxIndex + 1;
-        if (value < 0) value = MaxIndex;
+        return new(tuple);
+    }
+
+    public virtual int RepeatIndex(int value)
+    {
+        var maxIndex = (int)((MaxValue - MinValue) / Step);
+        value %= maxIndex + 1;
+        if (value < 0) value = maxIndex;
+
         return value;
     }
 
-    public override float GetValueByIndex(int index)
-        => RepeatIndex(index) * Step + MinValue;
+    public virtual float GetValueByIndex(int index)
+    {
+        return (RepeatIndex(index) * Step) + MinValue;
+    }
 
-    public override int GetNearestIndex(float num)
+    public virtual int GetNearestIndex(float num)
     {
         return (int)Math.Round((num - MinValue) / Step);
     }

@@ -28,34 +28,43 @@ public static class CustomWinnerHolder
         AdditionalWinnerTeams = [];
         WinnerRoles = [];
         WinnerIds = [];
+        Logger.Info("Reset", "CustomWinnerHolder");
     }
 
-    public static void ClearWinners()
-    {
-        WinnerRoles.Clear();
-        WinnerIds.Clear();
-    }
-
-    /// <summary><para>Assign a value to WinnerTeam. </para><para>Add to AdditionalWinnerTeams if already assigned.</para></summary>
+    /// <summary>
+    ///     <para>Assign a value to WinnerTeam. </para>
+    ///     <para>Add to AdditionalWinnerTeams if already assigned.</para>
+    /// </summary>
     public static void SetWinnerOrAdditonalWinner(CustomWinner winner)
     {
-        if (WinnerTeam == CustomWinner.Default) WinnerTeam = winner;
-        else AdditionalWinnerTeams.Add((AdditionalWinners)winner);
+        if (WinnerTeam == CustomWinner.Default)
+            WinnerTeam = winner;
+        else
+            AdditionalWinnerTeams.Add((AdditionalWinners)winner);
+
+        Logger.Info($"WinnerTeam: {WinnerTeam}, AdditionalWinnerTeams: {string.Join(", ", AdditionalWinnerTeams)}", "CustomWinnerHolder.SetWinnerOrAdditonalWinner");
     }
 
-    /// <summary><para>Assign a value to WinnerTeam. </para><para>If it is already assigned, add the existing value to AdditionalWinnerTeams and then assign it.</para></summary>
+    /// <summary>
+    ///     <para>Assign a value to WinnerTeam. </para>
+    ///     <para>If it is already assigned, add the existing value to AdditionalWinnerTeams and then assign it.</para>
+    /// </summary>
     public static void ShiftWinnerAndSetWinner(CustomWinner winner)
     {
-        if (WinnerTeam != CustomWinner.Default)
-            AdditionalWinnerTeams.Add((AdditionalWinners)WinnerTeam);
+        if (WinnerTeam != CustomWinner.Default) AdditionalWinnerTeams.Add((AdditionalWinners)WinnerTeam);
+
         WinnerTeam = winner;
+        Logger.Info($"WinnerTeam: {WinnerTeam}, AdditionalWinnerTeams: {string.Join(", ", AdditionalWinnerTeams)}", "CustomWinnerHolder.ShiftWinnerAndSetWinner");
     }
 
-    /// <summary><para>Delete any existing values and then assign the values to WinnerTeam.</para></summary>
+    /// <summary>
+    ///     <para>Delete any existing values and then assign the values to WinnerTeam.</para>
+    /// </summary>
     public static void ResetAndSetWinner(CustomWinner winner)
     {
         Reset();
         WinnerTeam = winner;
+        Logger.Info($"WinnerTeam: {WinnerTeam}", "CustomWinnerHolder.ResetAndSetWinner");
     }
 
     public static MessageWriter WriteTo(MessageWriter writer)
@@ -63,16 +72,13 @@ public static class CustomWinnerHolder
         writer.WritePacked((int)WinnerTeam);
 
         writer.WritePacked(AdditionalWinnerTeams.Count);
-        foreach (var wt in AdditionalWinnerTeams)
-            writer.WritePacked((int)wt);
+        foreach (AdditionalWinners wt in AdditionalWinnerTeams) writer.WritePacked((int)wt);
 
         writer.WritePacked(WinnerRoles.Count);
-        foreach (var wr in WinnerRoles)
-            writer.WritePacked((int)wr);
+        foreach (CustomRoles wr in WinnerRoles) writer.WritePacked((int)wr);
 
         writer.WritePacked(WinnerIds.Count);
-        foreach (var id in WinnerIds)
-            writer.Write(id);
+        foreach (byte id in WinnerIds) writer.Write(id);
 
         return writer;
     }
@@ -82,18 +88,15 @@ public static class CustomWinnerHolder
         WinnerTeam = (CustomWinner)reader.ReadPackedInt32();
 
         AdditionalWinnerTeams = [];
-        int AdditionalWinnerTeamsCount = reader.ReadPackedInt32();
-        for (int i = 0; i < AdditionalWinnerTeamsCount; i++)
-            AdditionalWinnerTeams.Add((AdditionalWinners)reader.ReadPackedInt32());
+        int additionalWinnerTeamsCount = reader.ReadPackedInt32();
+        for (var i = 0; i < additionalWinnerTeamsCount; i++) AdditionalWinnerTeams.Add((AdditionalWinners)reader.ReadPackedInt32());
 
         WinnerRoles = [];
-        int WinnerRolesCount = reader.ReadPackedInt32();
-        for (int i = 0; i < WinnerRolesCount; i++)
-            WinnerRoles.Add((CustomRoles)reader.ReadPackedInt32());
+        int winnerRolesCount = reader.ReadPackedInt32();
+        for (var i = 0; i < winnerRolesCount; i++) WinnerRoles.Add((CustomRoles)reader.ReadPackedInt32());
 
         WinnerIds = [];
-        int WinnerIdsCount = reader.ReadPackedInt32();
-        for (int i = 0; i < WinnerIdsCount; i++)
-            WinnerIds.Add(reader.ReadByte());
+        int winnerIdsCount = reader.ReadPackedInt32();
+        for (var i = 0; i < winnerIdsCount; i++) WinnerIds.Add(reader.ReadByte());
     }
 }

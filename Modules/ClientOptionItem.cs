@@ -1,4 +1,5 @@
-﻿using System;
+using System;
+using System.Collections.Generic;
 using BepInEx.Configuration;
 using UnityEngine;
 
@@ -8,7 +9,7 @@ namespace EHR;
 public class ClientOptionItem
 {
     public static SpriteRenderer CustomBackground;
-    private static int NumOptions;
+    private static List<ToggleButtonBehaviour> OptionButtons;
     private readonly ConfigEntry<bool> Config;
     public readonly ToggleButtonBehaviour ToggleButton;
 
@@ -22,19 +23,19 @@ public class ClientOptionItem
         {
             Config = config;
 
-            var mouseMoveToggle = optionsMenuBehaviour.DisableMouseMovement;
+            ToggleButtonBehaviour mouseMoveToggle = optionsMenuBehaviour.DisableMouseMovement;
 
-            if (CustomBackground == null)
+            if (!CustomBackground)
             {
-                NumOptions = 0;
                 CustomBackground = Object.Instantiate(optionsMenuBehaviour.Background, optionsMenuBehaviour.transform);
                 CustomBackground.name = "CustomBackground";
                 CustomBackground.transform.localScale = new(0.9f, 0.9f, 1f);
                 CustomBackground.transform.localPosition += Vector3.back * 8;
+                CustomBackground.size += new Vector2(3f, 0f);
                 CustomBackground.gameObject.SetActive(false);
 
-                var closeButton = Object.Instantiate(mouseMoveToggle, CustomBackground.transform);
-                closeButton.transform.localPosition = new(1.3f, -2.3f, -6f);
+                ToggleButtonBehaviour closeButton = Object.Instantiate(mouseMoveToggle, CustomBackground.transform);
+                closeButton.transform.localPosition = new(2.6f, -2.3f, -6f);
                 closeButton.name = "Back";
                 closeButton.Text.text = Translator.GetString("Back");
                 closeButton.Background.color = Palette.DisabledGrey;
@@ -45,7 +46,8 @@ public class ClientOptionItem
                 UiElement[] selectableButtons = optionsMenuBehaviour.ControllerSelectable.ToArray();
                 PassiveButton leaveButton = null;
                 PassiveButton returnButton = null;
-                foreach (var button in selectableButtons)
+
+                foreach (UiElement button in selectableButtons)
                 {
                     if (button == null) continue;
 
@@ -60,42 +62,53 @@ public class ClientOptionItem
                     }
                 }
 
-                var generalTab = mouseMoveToggle.transform.parent.parent.parent;
+                Transform generalTab = mouseMoveToggle.transform.parent.parent.parent;
 
-                var modOptionsButton = Object.Instantiate(mouseMoveToggle, generalTab);
+                ToggleButtonBehaviour modOptionsButton = Object.Instantiate(mouseMoveToggle, generalTab);
                 modOptionsButton.transform.localPosition = leaveButton?.transform.localPosition ?? new(0f, -2.4f, 1f);
                 modOptionsButton.name = "EHROptions";
                 modOptionsButton.Text.text = Translator.GetString("EHROptions");
                 modOptionsButton.Background.color = new Color32(0, 165, 255, byte.MaxValue);
                 var modOptionsPassiveButton = modOptionsButton.GetComponent<PassiveButton>();
                 modOptionsPassiveButton.OnClick = new();
-                modOptionsPassiveButton.OnClick.AddListener(new Action(() => CustomBackground.gameObject.SetActive(true)));
+                modOptionsPassiveButton.OnClick.AddListener(new Action(() =>
+                {
+                    AdjustButtonPositions();
+                    CustomBackground.gameObject.SetActive(true);
+                }));
 
                 if (leaveButton != null && leaveButton.transform != null) leaveButton.transform.localPosition = new(-1.35f, -2.411f, -1f);
                 if (returnButton != null) returnButton.transform.localPosition = new(1.35f, -2.411f, -1f);
+                OptionButtons = [];
             }
 
             ToggleButton = Object.Instantiate(mouseMoveToggle, CustomBackground.transform);
+            OptionButtons.Add(ToggleButton);
+
+            // ReSharper disable once PossibleLossOfFraction
             ToggleButton.transform.localPosition = new(
-                NumOptions % 2 == 0 ? -1.3f : 1.3f,
-                // ReSharper disable once PossibleLossOfFraction
-                2.2f - (0.5f * (NumOptions / 2)),
-                -6f);
+                (OptionButtons.Count - 1) % 3 == 0 ? -2.6f : ((OptionButtons.Count - 1) % 3 == 1 ? 0f : 2.6f),
+                2.2f - (0.5f * ((OptionButtons.Count - 1) / 3)),
+                           -6f);
+
             ToggleButton.name = name;
             ToggleButton.Text.text = Translator.GetString(name);
             var passiveButton = ToggleButton.GetComponent<PassiveButton>();
             passiveButton.OnClick = new();
+
             passiveButton.OnClick.AddListener(new Action(() =>
             {
-                if (config != null) config.Value = !config.Value;
+                config?.Value = !config.Value;
+
                 UpdateToggle();
                 additionalOnClickAction?.Invoke();
             }));
+
             UpdateToggle();
         }
-        finally
+        catch (Exception e)
         {
-            NumOptions++;
+            Logger.Error(e.ToString(), "ClientOptionItem.Create");
         }
     }
 
@@ -108,11 +121,43 @@ public class ClientOptionItem
         return new(name, config, optionsMenuBehaviour, additionalOnClickAction);
     }
 
+    private static void AdjustButtonPositions()
+    {
+        if (OptionButtons == null || OptionButtons.Count == 0) return;
+
+        int totalRows = (OptionButtons.Count + 2) / 3;
+
+        const float topPosition = 2.2f;
+        const float bottomLimit = -1.6f;
+        const float availableHeight = topPosition - bottomLimit;
+        float rowSpacing = totalRows > 1 ? availableHeight / (totalRows - 1) : 0f;
+
+        for (int i = 0; i < OptionButtons.Count; i++)
+        {
+            var button = OptionButtons[i];
+            if (button == null) continue;
+
+            int row = i / 3;
+            int col = i % 3;
+
+            float xPos = col switch
+            {
+                0 => -2.6f,
+                1 => 0f,
+                _ => 2.6f
+            };
+
+            float yPos = topPosition - (row * rowSpacing);
+
+            button.transform.localPosition = new Vector3(xPos, yPos, -6f);
+        }
+    }
+
     public void UpdateToggle()
     {
         if (ToggleButton == null) return;
 
-        var color = Config is { Value: true } ? new(0, 165, 255, byte.MaxValue) : new Color32(77, 77, 77, byte.MaxValue);
+        Color32 color = Config is { Value: true } ? new(0, 165, 255, byte.MaxValue) : new Color32(77, 77, 77, byte.MaxValue);
         ToggleButton.Background.color = color;
         ToggleButton.Rollover?.ChangeOutColor(color);
     }

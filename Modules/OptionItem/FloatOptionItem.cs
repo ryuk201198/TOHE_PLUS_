@@ -7,10 +7,25 @@ public class FloatOptionItem(int id, string name, FloatValueRule rule, float def
     public readonly FloatValueRule Rule = rule;
 
     // Getter
-    public override int GetInt() => (int)Rule.GetValueByIndex(CurrentValue);
-    public override float GetFloat() => Rule.GetValueByIndex(CurrentValue);
-    public override string GetString() => ApplyFormat(((float)((int)(Rule.GetValueByIndex(CurrentValue) * 100) * 1.0) / 100).ToString(CultureInfo.CurrentCulture));
-    public override int GetValue() => Rule.RepeatIndex(base.GetValue());
+    public override int GetInt()
+    {
+        return (int)Rule.GetValueByIndex(CurrentValue);
+    }
+
+    public override float GetFloat()
+    {
+        return Rule.GetValueByIndex(CurrentValue);
+    }
+
+    public override string GetString()
+    {
+        return ApplyFormat(((float)((int)(Rule.GetValueByIndex(CurrentValue) * 100) * 1.0) / 100).ToString(CultureInfo.CurrentCulture));
+    }
+
+    public override int GetValue()
+    {
+        return Rule.RepeatIndex(base.GetValue());
+    }
 
     // Setter
     public override void SetValue(int value, bool doSync = true)

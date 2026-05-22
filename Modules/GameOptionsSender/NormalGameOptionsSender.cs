@@ -1,5 +1,8 @@
 using System;
+using System.Collections;
 using AmongUs.GameOptions;
+using Hazel;
+using Il2CppInterop.Runtime.InteropTypes.Arrays;
 
 namespace EHR.Modules;
 
@@ -16,9 +19,11 @@ public sealed class NormalGameOptionsSender : GameOptionsSender
             {
                 if (GameManager.Instance != null && GameManager.Instance.LogicComponents != null && (_logicOptions == null || !GameManager.Instance.LogicComponents.Contains(_logicOptions)))
                 {
-                    foreach (var glc in GameManager.Instance.LogicComponents)
-                        if (glc.TryCast<LogicOptions>(out var lo))
+                    foreach (GameLogicComponent glc in GameManager.Instance.LogicComponents)
+                    {
+                        if (glc.TryCast(out LogicOptions lo))
                             _logicOptions = lo;
+                    }
                 }
 
                 return _logicOptions is { IsDirty: true };
@@ -29,8 +34,50 @@ public sealed class NormalGameOptionsSender : GameOptionsSender
                 return _logicOptions is { IsDirty: true };
             }
         }
-        set { _logicOptions?.ClearDirtyFlag(); }
+        set => _logicOptions?.ClearDirtyFlag();
     }
 
-    protected override IGameOptions BuildGameOptions() => BasedGameOptions;
+    public override IGameOptions BuildGameOptions()
+    {
+        return BasedGameOptions;
+    }
+    
+    protected override IEnumerator SendOptionsArrayAsync(Il2CppStructArray<byte> optionArray, byte logicOptionsIndex)
+    {
+        yield return DataFlagRateLimiter.Enqueue(SendOptionsAction(optionArray, logicOptionsIndex)).Wait();
+    }
+
+    protected override void SendOptionsArray(Il2CppStructArray<byte> optionArray, byte logicOptionsIndex)
+    {
+        DataFlagRateLimiter.Enqueue(SendOptionsAction(optionArray, logicOptionsIndex));
+    }
+
+    private static Action SendOptionsAction(Il2CppStructArray<byte> optionArray, byte logicOptionsIndex)
+    {
+        return () =>
+        {
+            MessageWriter writer = MessageWriter.Get(SendOption.Reliable);
+
+            writer.StartMessage(5);
+            {
+                writer.Write(AmongUsClient.Instance.GameId);
+
+                writer.StartMessage(1);
+                {
+                    writer.WritePacked(GameManager.Instance.NetId);
+                    writer.StartMessage(logicOptionsIndex);
+                    {
+                        writer.WriteBytesAndSize(optionArray);
+                    }
+                    writer.EndMessage();
+                }
+                writer.EndMessage();
+            }
+
+            writer.EndMessage();
+
+            AmongUsClient.Instance.SendOrDisconnect(writer);
+            writer.Recycle();
+        };
+    }
 }

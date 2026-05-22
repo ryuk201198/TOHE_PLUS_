@@ -1,60 +1,72 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using AmongUs.GameOptions;
 using BepInEx;
-using EHR.AddOns.Crewmate;
-using EHR.AddOns.Impostor;
-using EHR.Crewmate;
+using EHR.Gamemodes;
 using EHR.Modules;
-using EHR.Neutral;
-using EHR.Patches;
+using EHR.Roles;
 using HarmonyLib;
 using Hazel;
 using UnityEngine;
+#if DEBUG
+using EHR.Patches;
+#endif
 
 namespace EHR;
 
-[HarmonyPatch(typeof(ShipStatus), nameof(ShipStatus.FixedUpdate))]
-static class ShipFixedUpdatePatch
+public static class ShipStatusSystem
 {
-    public static void Postfix( /*ShipStatus __instance*/)
-    {
-        if (!AmongUsClient.Instance.AmHost) return;
-        if (Main.IsFixedCooldown && Main.RefixCooldownDelay >= 0)
-        {
-            Main.RefixCooldownDelay -= Time.fixedDeltaTime;
-        }
-        else if (!float.IsNaN(Main.RefixCooldownDelay))
-        {
-            Utils.MarkEveryoneDirtySettingsV4();
-            Main.RefixCooldownDelay = float.NaN;
-            Logger.Info("Refix Cooldown", "CoolDown");
-        }
-    }
-}
+    public static readonly SystemTypes[] AllSabotage =
+    [
+        SystemTypes.Electrical,
+        SystemTypes.Reactor,
+        SystemTypes.Laboratory,
+        SystemTypes.LifeSupp,
+        SystemTypes.Comms,
+        SystemTypes.HeliSabotage,
+        SystemTypes.MushroomMixupSabotage,
+        (SystemTypes)SubmergedCompatibility.SubmergedSystemTypes.Ballast
+    ];
 
+    public static VentilationSystem VentilationSystem;
+    public static ICriticalSabotage ICriticalSabotage;
+    public static ReactorSystemType ReactorSystemType;
+    public static HeliSabotageSystem HeliSabotageSystem;
+    public static LifeSuppSystemType LifeSuppSystemType;
+    public static SwitchSystem SwitchSystem;
+    public static HqHudSystemType HqHudSystemType;
+    public static HudOverrideSystemType HudOverrideSystemType;
+    public static MushroomMixupSabotageSystem MushroomMixupSabotageSystem;
+}
 [HarmonyPatch(typeof(ShipStatus), nameof(ShipStatus.UpdateSystem), typeof(SystemTypes), typeof(PlayerControl), typeof(MessageReader))]
 public static class MessageReaderUpdateSystemPatch
 {
-    public static bool Prefix([HarmonyArgument(0)] SystemTypes systemType, [HarmonyArgument(1)] PlayerControl player, [HarmonyArgument(2)] MessageReader reader)
+    public static bool Prefix(ShipStatus __instance, [HarmonyArgument(0)] SystemTypes systemType, [HarmonyArgument(1)] PlayerControl player, [HarmonyArgument(2)] MessageReader reader)
     {
         try
         {
             if (systemType is SystemTypes.Ventilation or SystemTypes.Security or SystemTypes.Decontamination or SystemTypes.Decontamination2 or SystemTypes.Decontamination3 or SystemTypes.MedBay) return true;
 
-            var amount = MessageReader.Get(reader).ReadByte();
+            byte amount;
+            {
+                MessageReader newReader = MessageReader.Get(reader);
+                amount = newReader.ReadByte();
+                newReader.Recycle();
+            }
+
             if (EAC.CheckInvalidSabotage(systemType, player, amount))
             {
                 Logger.Info("EAC patched Sabotage RPC", "MessageReaderUpdateSystemPatch");
+                reader.Recycle();
                 return false;
             }
 
-            return RepairSystemPatch.Prefix(systemType, player, amount);
+            return UpdateSystemPatch.Prefix(__instance, systemType, player, amount);
         }
-        catch
-        {
-        }
+        catch { }
 
         return true;
     }
@@ -64,80 +76,75 @@ public static class MessageReaderUpdateSystemPatch
         try
         {
             if (systemType is SystemTypes.Ventilation or SystemTypes.Security or SystemTypes.Decontamination or SystemTypes.Decontamination2 or SystemTypes.Decontamination3 or SystemTypes.MedBay) return;
-            RepairSystemPatch.Postfix(systemType, player);
+
+            UpdateSystemPatch.Postfix(systemType, player);
         }
-        catch
-        {
-        }
+        catch { }
     }
 }
 
 [HarmonyPatch(typeof(ShipStatus), nameof(ShipStatus.UpdateSystem), typeof(SystemTypes), typeof(PlayerControl), typeof(byte))]
-static class RepairSystemPatch
+internal static class UpdateSystemPatch
 {
-    public static bool Prefix( /*ShipStatus __instance,*/
+    public static bool Prefix(ShipStatus __instance,
         [HarmonyArgument(0)] SystemTypes systemType,
         [HarmonyArgument(1)] PlayerControl player,
         [HarmonyArgument(2)] byte amount)
     {
-        Logger.Msg($"SystemType: {systemType}, PlayerName: {player.GetNameWithRole().RemoveHtmlTags()}, amount: {amount}", "RepairSystem");
+        Logger.Msg($"SystemType: {systemType}, PlayerName: {player.GetNameWithRole().RemoveHtmlTags()}, amount: {amount}", "UpdateSystem");
+#if DEBUG
         if (RepairSender.Enabled && AmongUsClient.Instance.NetworkMode != NetworkModes.OnlineGame)
             Logger.SendInGame($"SystemType: {systemType}, PlayerName: {player.GetNameWithRole().RemoveHtmlTags()}, amount: {amount}");
+#endif
 
         if (!AmongUsClient.Instance.AmHost) return true; // Execute the following only on the host
 
-        if ((Options.CurrentGameMode != CustomGameMode.Standard || Options.DisableSabotage.GetBool()) && systemType == SystemTypes.Sabotage) return false;
+        if ((Options.CurrentGameMode is not (CustomGameMode.Standard or CustomGameMode.Snowdown) || !SabotageSystemTypeUpdateSystemPatch.CheckDisabledSabotage(systemType)) && systemType == SystemTypes.Sabotage) return false;
+        if (player.Is(CustomRoles.Fool) && systemType is SystemTypes.Comms or SystemTypes.Electrical) return false;
 
-        // Note: "SystemTypes.Laboratory" сauses bugs in the Host, it is better not to use
-        if (player.Is(CustomRoles.Fool) && (systemType is SystemTypes.Comms or SystemTypes.Electrical))
-        {
-            return false;
-        }
+        if (SubmergedCompatibility.IsSubmerged() && systemType is not (SystemTypes.Electrical or SystemTypes.Comms)) return true;
 
         switch (player.GetCustomRole())
         {
-            case CustomRoles.SabotageMaster:
-                SabotageMaster.RepairSystem(player.PlayerId, systemType, amount);
+            case CustomRoles.Mechanic:
+                Mechanic.UpdateSystem(player.PlayerId, systemType, amount);
                 Utils.NotifyRoles(SpecifySeer: player, SpecifyTarget: player);
                 break;
-            case CustomRoles.Alchemist when Main.PlayerStates[player.PlayerId].Role is Alchemist { IsEnable: true, FixNextSabo: true }:
-                Alchemist.RepairSystem(player, systemType, amount);
+            case CustomRoles.Alchemist when systemType != SystemTypes.Electrical && Main.PlayerStates[player.PlayerId].Role is Alchemist { IsEnable: true, FixNextSabo: true }:
+                Alchemist.UpdateSystem(player, systemType, amount);
                 Utils.NotifyRoles(SpecifySeer: player, SpecifyTarget: player);
                 break;
             case CustomRoles.Technician:
-                Technician.RepairSystem(player.PlayerId, systemType, amount);
+                Technician.UpdateSystem(player.PlayerId, systemType, amount);
                 Utils.NotifyRoles(SpecifySeer: player, SpecifyTarget: player);
                 break;
         }
 
         switch (systemType)
         {
-            case SystemTypes.Doors when player.Is(CustomRoles.Unlucky) && player.IsAlive():
-                var Ue = IRandom.Instance;
-                if (Ue.Next(0, 100) < Options.UnluckySabotageSuicideChance.GetInt())
+            case SystemTypes.Doors when player.Is(CustomRoles.Unlucky) && player.IsAlive() && IRandom.Instance.Next(0, 100) < Options.UnluckySabotageSuicideChance.GetInt():
+            {
+                player.Suicide();
+                return false;
+            }
+            case SystemTypes.Electrical when amount <= 4:
+            {
+                if (Main.NormalOptions.MapId == 4)
                 {
-                    player.Suicide();
-                    return false;
+                    if (Options.DisableAirshipViewingDeckLightsPanel.GetBool() && FastVector2.DistanceWithinRange(player.Pos(), new(-12.93f, -11.28f), 2f)) return false;
+                    if (Options.DisableAirshipGapRoomLightsPanel.GetBool() && FastVector2.DistanceWithinRange(player.Pos(), new(13.92f, 6.43f), 2f)) return false;
+                    if (Options.DisableAirshipCargoLightsPanel.GetBool() && FastVector2.DistanceWithinRange(player.Pos(), new(30.56f, 2.12f), 2f)) return false;
                 }
 
-                break;
-            case SystemTypes.Electrical when amount <= 4 && Main.NormalOptions.MapId == 4:
-                if (Options.DisableAirshipViewingDeckLightsPanel.GetBool() && Vector2.Distance(player.transform.position, new(-12.93f, -11.28f)) <= 2f) return false;
-                if (Options.DisableAirshipGapRoomLightsPanel.GetBool() && Vector2.Distance(player.transform.position, new(13.92f, 6.43f)) <= 2f) return false;
-                if (Options.DisableAirshipCargoLightsPanel.GetBool() && Vector2.Distance(player.transform.position, new(30.56f, 2.12f)) <= 2f) return false;
-                goto Next;
-            case SystemTypes.Electrical when amount <= 4:
-                Next:
-            {
-                var SwitchSystem = ShipStatus.Instance?.Systems?[SystemTypes.Electrical]?.Cast<SwitchSystem>();
-                if (SwitchSystem is { IsActive: true })
+                var switchSystem = ShipStatusSystem.SwitchSystem;
+                if (switchSystem is { IsActive: true })
                 {
                     switch (Main.PlayerStates[player.PlayerId].Role)
                     {
-                        case SabotageMaster:
+                        case Mechanic:
                         {
-                            Logger.Info($"{player.GetNameWithRole().RemoveHtmlTags()} instant-fix-lights", "SabotageMaster");
-                            SabotageMaster.SwitchSystemRepair(player.PlayerId, SwitchSystem, amount);
+                            Logger.Info($"{player.GetNameWithRole().RemoveHtmlTags()} instant-fix-lights", "Mechanic");
+                            Mechanic.SwitchSystemRepair(player.PlayerId, switchSystem, amount);
                             Utils.NotifyRoles(SpecifySeer: player, SpecifyTarget: player);
                             break;
                         }
@@ -145,7 +152,8 @@ static class RepairSystemPatch
                         {
                             Logger.Info($"{player.GetNameWithRole().RemoveHtmlTags()} instant-fix-lights", "Alchemist");
                             if (amount.HasBit(SwitchSystem.DamageSystem)) break;
-                            SwitchSystem.ActualSwitches = (byte)(SwitchSystem.ExpectedSwitches ^ 1 << amount);
+
+                            switchSystem.ActualSwitches = (byte)(switchSystem.ExpectedSwitches ^ (1 << amount));
                             am.FixNextSabo = false;
                             Utils.NotifyRoles(SpecifySeer: player, SpecifyTarget: player);
                             break;
@@ -154,7 +162,8 @@ static class RepairSystemPatch
                         {
                             Logger.Info($"{player.GetNameWithRole().RemoveHtmlTags()} instant-fix-lights", "Adventurer");
                             if (amount.HasBit(SwitchSystem.DamageSystem)) break;
-                            SwitchSystem.ActualSwitches = (byte)(SwitchSystem.ExpectedSwitches ^ 1 << amount);
+
+                            switchSystem.ActualSwitches = (byte)(switchSystem.ExpectedSwitches ^ (1 << amount));
                             av.OnLightsFix();
                             Utils.NotifyRoles(SpecifySeer: player, SpecifyTarget: player);
                             break;
@@ -162,52 +171,30 @@ static class RepairSystemPatch
                         case Technician:
                         {
                             Logger.Info($"{player.GetNameWithRole().RemoveHtmlTags()} instant-fix-lights", "Technician");
-                            Technician.SwitchSystemRepair(player.PlayerId, SwitchSystem, amount);
+                            Technician.SwitchSystemRepair(player.PlayerId, switchSystem, amount);
                             Utils.NotifyRoles(SpecifySeer: player, SpecifyTarget: player);
                             break;
                         }
                     }
-
-                    if (player.Is(CustomRoles.Damocles) && Damocles.CountRepairSabotage) Damocles.OnRepairSabotage(player.PlayerId);
-                    if (player.Is(CustomRoles.Stressed) && Stressed.CountRepairSabotage) Stressed.OnRepairSabotage(player);
                 }
 
                 break;
             }
             case SystemTypes.Sabotage when AmongUsClient.Instance.NetworkMode != NetworkModes.FreePlay:
-                if (Options.CurrentGameMode != CustomGameMode.Standard) return false;
-                if (SecurityGuard.BlockSabo.Count > 0) return false;
-                if (player.IsRoleBlocked())
-                {
-                    player.Notify(BlockedAction.Sabotage.GetBlockNotify());
-                    return false;
-                }
-
-                if (player.Is(Team.Impostor) && !player.IsAlive() && Options.DeadImpCantSabotage.GetBool()) return false;
-                if (!player.Is(Team.Impostor) && !player.IsAlive()) return false;
-                return player.GetCustomRole() switch
-                {
-                    CustomRoles.Jackal when Jackal.CanSabotage.GetBool() => true,
-                    CustomRoles.Sidekick when Jackal.CanSabotageSK.GetBool() => true,
-                    CustomRoles.Traitor when Traitor.CanSabotage.GetBool() => true,
-                    CustomRoles.Parasite when player.IsAlive() => true,
-                    CustomRoles.Refugee when player.IsAlive() => true,
-                    _ => Main.PlayerStates[player.PlayerId].Role.CanUseSabotage(player)
-                };
+                return SabotageSystemTypeUpdateSystemPatch.CheckSabotage(__instance.Systems[SystemTypes.Sabotage].CastFast<SabotageSystemType>(), player, systemType);
             case SystemTypes.Security when amount == 1:
-                var camerasDisabled = (MapNames)Main.NormalOptions.MapId switch
+            {
+                bool camerasDisabled = Main.CurrentMap switch
                 {
                     MapNames.Skeld => Options.DisableSkeldCamera.GetBool(),
                     MapNames.Polus => Options.DisablePolusCamera.GetBool(),
                     MapNames.Airship => Options.DisableAirshipCamera.GetBool(),
                     _ => false
                 };
-                if (camerasDisabled)
-                {
-                    player.Notify(Translator.GetString("CamerasDisabledNotify"), 15f);
-                }
 
+                if (camerasDisabled) player.Notify(Translator.GetString("CamerasDisabledNotify"), 15f);
                 return !camerasDisabled;
+            }
         }
 
         return true;
@@ -215,55 +202,70 @@ static class RepairSystemPatch
 
     public static void Postfix([HarmonyArgument(0)] SystemTypes systemType, [HarmonyArgument(1)] PlayerControl player)
     {
-        Camouflage.CheckCamouflage();
-
         switch (systemType)
         {
+            case SystemTypes.Comms:
+            {
+                if (!Camouflage.CheckCamouflage()) Utils.NotifyRoles();
+                goto case SystemTypes.Reactor;
+            }
             case SystemTypes.Reactor:
             case SystemTypes.LifeSupp:
-            case SystemTypes.Comms:
             case SystemTypes.Laboratory:
             case SystemTypes.HeliSabotage:
-            case SystemTypes.Electrical:
+            case SystemTypes.Electrical when !Utils.IsActive(SystemTypes.Electrical):
             {
-                if (player.Is(CustomRoles.Damocles) && Damocles.CountRepairSabotage) Damocles.OnRepairSabotage(player.PlayerId);
-                if (player.Is(CustomRoles.Stressed) && Stressed.CountRepairSabotage) Stressed.OnRepairSabotage(player);
-                if (Main.PlayerStates[player.PlayerId].Role is Rogue rg) rg.OnFixSabotage();
+                if (player.Is(CustomRoles.Damocles) && Damocles.CountRepairSabotage)
+                    Damocles.OnRepairSabotage(player.PlayerId);
+
+                if (player.Is(CustomRoles.Stressed) && Stressed.CountRepairSabotage)
+                    Stressed.OnRepairSabotage(player);
+
+                if (Main.PlayerStates[player.PlayerId].Role is Rogue rg)
+                    rg.OnFixSabotage();
+
                 break;
+            }
+        }
+
+        if (ShipStatusSystem.AllSabotage.Contains(systemType) && !Utils.IsActive(systemType))
+        {
+            bool petcd = !Options.UsePhantomBasis.GetBool();
+
+            foreach (PlayerControl pc in Main.CachedAlivePlayerControls())
+            {
+                if (pc.Is(CustomRoles.Wiper))
+                {
+                    if (petcd) pc.AddAbilityCD();
+                    else pc.RpcResetAbilityCooldown();
+                }
             }
         }
     }
 
     public static void CheckAndOpenDoorsRange(ShipStatus __instance, int amount, int min, int max)
     {
-        var Ids = new List<int>();
-        for (var i = min; i <= max; i++)
-        {
-            Ids.Add(i);
-        }
-
-        CheckAndOpenDoors(__instance, amount, [.. Ids]);
+        CheckAndOpenDoors(__instance, amount, Enumerable.Range(min, max - min + 1).ToList());
     }
 
-    private static void CheckAndOpenDoors(ShipStatus __instance, int amount, params int[] DoorIds)
+    private static void CheckAndOpenDoors(ShipStatus __instance, int amount, params List<int> doorIds)
     {
-        if (!DoorIds.Contains(amount)) return;
-        foreach (int id in DoorIds)
-        {
-            __instance.RpcUpdateSystem(SystemTypes.Doors, (byte)id);
-        }
+        if (!doorIds.Contains(amount)) return;
+        foreach (int id in doorIds) __instance.RpcUpdateSystem(SystemTypes.Doors, (byte)id);
     }
 }
 
 [HarmonyPatch(typeof(ShipStatus), nameof(ShipStatus.CloseDoorsOfType))]
-static class CloseDoorsPatch
+internal static class CloseDoorsPatch
 {
-    public static bool Prefix( /*ShipStatus __instance, */ [HarmonyArgument(0)] SystemTypes room)
+    public static bool Prefix(ShipStatus __instance, [HarmonyArgument(0)] SystemTypes room)
     {
-        bool allow = !Options.DisableSabotage.GetBool() && Options.CurrentGameMode is not CustomGameMode.SoloKombat and not CustomGameMode.FFA and not CustomGameMode.MoveAndStop and not CustomGameMode.HotPotato and not CustomGameMode.Speedrun and not CustomGameMode.CaptureTheFlag and not CustomGameMode.NaturalDisasters;
+        bool allow = !AntiBlackout.SkipTasks && Options.CurrentGameMode is not CustomGameMode.SoloPVP and not CustomGameMode.FFA and not CustomGameMode.StopAndGo and not CustomGameMode.HotPotato and not CustomGameMode.Speedrun and not CustomGameMode.CaptureTheFlag and not CustomGameMode.NaturalDisasters and not CustomGameMode.RoomRush and not CustomGameMode.KingOfTheZones and not CustomGameMode.Quiz and not CustomGameMode.TheMindGame and not CustomGameMode.BedWars and not CustomGameMode.Deathrace and not CustomGameMode.Mingle and not CustomGameMode.Snowdown;
 
+        if (Doorjammer.JammedRooms.Contains(room)) allow = false;
         if (SecurityGuard.BlockSabo.Count > 0) allow = false;
         if (Options.DisableCloseDoor.GetBool()) allow = false;
+        if (Main.CurrentMap != MapNames.Polus && __instance.Systems[SystemTypes.Sabotage].CastFast<SabotageSystemType>().AnyActive) allow = false;
 
         Logger.Info($"({room}) => {(allow ? "Allowed" : "Blocked")}", "DoorClose");
         return allow;
@@ -271,7 +273,7 @@ static class CloseDoorsPatch
 }
 
 [HarmonyPatch(typeof(ShipStatus), nameof(ShipStatus.Start))]
-static class StartPatch
+internal static class StartPatch
 {
     public static void Postfix()
     {
@@ -289,56 +291,179 @@ static class StartPatch
             if (ConsoleManager.ConsoleActive && !DebugModeManager.AmDebugger)
             {
                 ConsoleManager.DetachConsole();
-                Logger.SendInGame("Sorry, console use is prohibited in this room, so your console has been turned off");
+                Logger.SendInGame("Sorry, console use is prohibited in this room, so your console has been turned off", Color.red);
             }
         }
     }
 }
 
 [HarmonyPatch(typeof(ShipStatus), nameof(ShipStatus.StartMeeting))]
-static class StartMeetingPatch
+internal static class StartMeetingPatch
 {
-    public static void Prefix( /*ShipStatus __instance, PlayerControl reporter,*/ NetworkedPlayerInfo target)
+    public static void Prefix( /*ShipStatus __instance, PlayerControl reporter,*/ [HarmonyArgument(1)] NetworkedPlayerInfo target)
     {
         MeetingStates.ReportTarget = target;
         MeetingStates.DeadBodies = Object.FindObjectsOfType<DeadBody>();
+        
+        ReportDeadBodyPatch.AlreadyReportedBodies.UnionWith(MeetingStates.DeadBodies.Select(db => db.ParentId));
     }
 }
 
 [HarmonyPatch(typeof(GameManager), nameof(GameManager.CheckTaskCompletion))]
-static class CheckTaskCompletionPatch
+internal static class CheckTaskCompletionPatch
 {
     public static bool Prefix(ref bool __result)
     {
-        if (Options.DisableTaskWin.GetBool() || Options.NoGameEnd.GetBool() || TaskState.InitialTotalTasks == 0 || (Options.DisableTaskWinIfAllCrewsAreDead.GetBool() && !Main.AllAlivePlayerControls.Any(x => x.Is(CustomRoleTypes.Crewmate))) || (Options.DisableTaskWinIfAllCrewsAreConverted.GetBool() && Main.AllAlivePlayerControls.Where(x => x.Is(Team.Crewmate) && x.GetRoleTypes() is RoleTypes.Crewmate or RoleTypes.Engineer or RoleTypes.Scientist or RoleTypes.CrewmateGhost or RoleTypes.GuardianAngel).All(x => x.IsConverted())) || Options.CurrentGameMode != CustomGameMode.Standard)
-        {
-            __result = false;
-            return false;
-        }
-
-        return true;
+        __result = false;
+        return false;
     }
 }
 
-[HarmonyPatch(typeof(HauntMenuMinigame), nameof(HauntMenuMinigame.SetFilterText))]
-public static class HauntMenuMinigameSetFilterTextPatch
+[HarmonyPatch(typeof(HauntMenuMinigame), nameof(HauntMenuMinigame.Start))]
+internal static class HauntMenuMinigameStartPatch
 {
-    public static bool Prefix(HauntMenuMinigame __instance)
+    public static HauntMenuMinigame Instance;
+
+    public static void Postfix(HauntMenuMinigame __instance)
     {
-        if (__instance.HauntTarget != null && Options.GhostCanSeeOtherRoles.GetBool())
+        Instance = __instance;
+    }
+}
+
+[HarmonyPatch(typeof(HauntMenuMinigame), nameof(HauntMenuMinigame.SetHauntTarget))]
+public static class HauntMenuMinigameSetHauntTargetPatch
+{
+    public static bool Prefix(HauntMenuMinigame __instance, [HarmonyArgument(0)] PlayerControl target)
+    {
+        if (Options.CurrentGameMode == CustomGameMode.Quiz && Quiz.AllowKills) return false;
+
+        if (!target)
         {
-            var id = __instance.HauntTarget.PlayerId;
-            __instance.FilterText.text = Utils.GetDisplayRoleName(id) + Utils.GetProgressText(id);
-            return false;
+            __instance.HauntTarget = null;
+            __instance.NameText.text = "";
+            __instance.FilterText.text = "";
+            __instance.HauntingText.enabled = false;
+        }
+        else
+        {
+            __instance.HauntTarget = target;
+            __instance.HauntingText.enabled = true;
+            __instance.NameText.text = Main.AllPlayerNames.GetValueOrDefault(target.PlayerId, target.Data?.GetPlayerName(PlayerOutfitType.Default));
+
+            if (__instance.HauntTarget && Options.GhostCanSeeOtherRoles.GetBool() && (!Main.DiedThisRound.Contains(PlayerControl.LocalPlayer.PlayerId) || !Utils.IsRevivingRoleAlive()))
+                __instance.FilterText.text = __instance.HauntTarget.GetCustomRole().ToColoredString();
+            else
+                __instance.FilterText.text = "";
         }
 
-        return true;
+        return false;
+    }
+}
+[HarmonyPatch(typeof(PolusShipStatus), nameof(PolusShipStatus.OnEnable))]
+internal static class PolusShipStatusOnEnablePatch
+{
+    public static void Postfix()
+    {
+        ShipStatusOnEnablePatch.Postfix();
+    }
+}
+[HarmonyPatch(typeof(AirshipStatus), nameof(AirshipStatus.OnEnable))]
+internal static class AirshipStatusOnEnablePatch
+{
+    public static void Postfix()
+    {
+        ShipStatusOnEnablePatch.Postfix();
+    }
+}
+[HarmonyPatch(typeof(ShipStatus), nameof(ShipStatus.OnEnable))]
+internal static class ShipStatusOnEnablePatch
+{
+    public static void Postfix()
+    {
+        int mapId = Main.NormalOptions.MapId;
+        List<SystemTypes> SystemTypesList = ShipStatusSystem.AllSabotage.ToList();
+        SystemTypesList.Add(SystemTypes.Ventilation);
+
+        foreach (var systemType in SystemTypesList)
+        {
+            try
+            {
+                if (!ShipStatus.Instance.Systems.TryGetValue(systemType, out ISystemType ISystemType)) continue;
+
+                switch (systemType)
+                {
+                    case SystemTypes.Reactor:
+                    {
+                        switch (mapId)
+                            {
+                                case 2: continue;
+                                case 4:
+                                    ShipStatusSystem.HeliSabotageSystem = ISystemType.TryCast<HeliSabotageSystem>();
+                                    break;
+                                default:
+                                    ShipStatusSystem.ReactorSystemType = ISystemType.TryCast<ReactorSystemType>();
+                                    break;
+                            }
+
+                        ShipStatusSystem.ICriticalSabotage = ISystemType.TryCast<ICriticalSabotage>();
+                    }
+                        break;
+                    case SystemTypes.Laboratory:
+                        {
+                            if (mapId != 2) continue;
+                            ShipStatusSystem.ReactorSystemType = ISystemType.TryCast<ReactorSystemType>();
+                            ShipStatusSystem.ICriticalSabotage = ISystemType.TryCast<ICriticalSabotage>();
+                        }
+                        break;
+                    case SystemTypes.HeliSabotage:
+                        {
+                            if (mapId != 4) continue;
+                            ShipStatusSystem.HeliSabotageSystem = ISystemType.TryCast<HeliSabotageSystem>();
+                            ShipStatusSystem.ICriticalSabotage = ISystemType.TryCast<ICriticalSabotage>();
+                        }
+                        break;
+                    case SystemTypes.LifeSupp:
+                        {
+                            if (mapId is 2 or 4 or 5) continue;
+                            ShipStatusSystem.LifeSuppSystemType = ISystemType.TryCast<LifeSuppSystemType>();
+                        }
+                        break;
+                    case SystemTypes.Electrical:
+                        {
+                            if (mapId == 5) continue;
+                            ShipStatusSystem.SwitchSystem = ISystemType.TryCast<SwitchSystem>();
+                        }
+                        break;
+                    case SystemTypes.Comms:
+                        {
+                            if (mapId is 1 or 5)
+                                ShipStatusSystem.HqHudSystemType = ISystemType.TryCast<HqHudSystemType>();
+                            else
+                                ShipStatusSystem.HudOverrideSystemType = ISystemType.TryCast<HudOverrideSystemType>();
+                        }
+                        break;
+                    case SystemTypes.MushroomMixupSabotage:
+                        {
+                            if (mapId != 5) continue;
+                            ShipStatusSystem.MushroomMixupSabotageSystem = ISystemType.TryCast<MushroomMixupSabotageSystem>();
+                        }
+                        break;
+                    case SystemTypes.Ventilation:
+                        {
+                            ShipStatusSystem.VentilationSystem = ISystemType.TryCast<VentilationSystem>();
+                        }
+                        break;
+                }
+            }
+            catch (Exception e)
+            { Utils.ThrowException(e); }
+        }
     }
 }
 
 // From https://github.com/0xDrMoe/TownofHost-Enhanced
 [HarmonyPatch(typeof(ShipStatus), nameof(ShipStatus.Begin))]
-static class ShipStatusBeginPatch
+internal static class ShipStatusBeginPatch
 {
     public static bool RolesIsAssigned = false;
 
@@ -347,26 +472,21 @@ static class ShipStatusBeginPatch
         return RolesIsAssigned;
     }
 
-    public static void Postfix()
+    public static void Postfix(ShipStatus __instance)
     {
         if (RolesIsAssigned && !Main.IntroDestroyed)
         {
-            foreach (var player in Main.AllPlayerControls)
-            {
-                Main.PlayerStates[player.PlayerId].InitTask(player);
-            }
+            foreach (PlayerControl player in Main.CachedAllPlayerControls()) Main.PlayerStates[player.PlayerId].InitTask(player);
 
             GameData.Instance.RecomputeTaskCounts();
             TaskState.InitialTotalTasks = GameData.Instance.TotalTasks;
-
-            Utils.DoNotifyRoles(ForceLoop: true, NoCache: true);
         }
     }
 }
 
 // From https://github.com/0xDrMoe/TownofHost-Enhanced
 [HarmonyPatch(typeof(ShipStatus), nameof(ShipStatus.SpawnPlayer))]
-static class ShipStatusSpawnPlayerPatch
+internal static class ShipStatusSpawnPlayerPatch
 {
     // Since SnapTo is unstable on the server side,
     // after a meeting, sometimes not all players appear on the table,
@@ -376,16 +496,16 @@ static class ShipStatusSpawnPlayerPatch
         if (!AmongUsClient.Instance.AmHost || initialSpawn || !player.IsAlive()) return true;
 
         Vector2 direction = Vector2.up.Rotate((player.PlayerId - 1) * (360f / numPlayers));
-        Vector2 position = __instance.MeetingSpawnCenter + direction * __instance.SpawnRadius + new Vector2(0.0f, 0.3636f);
+        Vector2 position = __instance.MeetingSpawnCenter + (direction * __instance.SpawnRadius) + new Vector2(0.0f, 0.3636f);
 
-        player.TP(position, log: false);
+        LateTask.New(() => player.TP(position, true, false), 1.5f, log: false);
         return false;
     }
 }
 
 // From https://github.com/0xDrMoe/TownofHost-Enhanced
 [HarmonyPatch(typeof(PolusShipStatus), nameof(PolusShipStatus.SpawnPlayer))]
-static class PolusShipStatusSpawnPlayerPatch
+internal static class PolusShipStatusSpawnPlayerPatch
 {
     public static bool Prefix(PolusShipStatus __instance,
         [HarmonyArgument(0)] PlayerControl player,
@@ -398,10 +518,10 @@ static class PolusShipStatusSpawnPlayerPatch
         int num2 = player.PlayerId % 15;
 
         Vector2 position = num2 >= num1
-            ? __instance.MeetingSpawnCenter2 + Vector2.right * (num2 - num1) * 0.6f
-            : __instance.MeetingSpawnCenter + Vector2.right * num2 * 0.6f;
+            ? __instance.MeetingSpawnCenter2 + (Vector2.right * (num2 - num1) * 0.6f)
+            : __instance.MeetingSpawnCenter + (Vector2.right * num2 * 0.6f);
 
-        player.TP(position, log: false);
+        LateTask.New(() => player.TP(position, true, false), 1.5f, log: false);
         return false;
     }
 }
@@ -409,12 +529,13 @@ static class PolusShipStatusSpawnPlayerPatch
 // All below are from: https://github.com/Rabek009/MoreGamemodes/blob/master/Patches/ShipStatusPatch.cs
 
 [HarmonyPatch(typeof(VentilationSystem), nameof(VentilationSystem.PerformVentOp))]
-static class PerformVentOpPatch
+internal static class PerformVentOpPatch
 {
     public static bool Prefix(VentilationSystem __instance, [HarmonyArgument(0)] byte playerId, [HarmonyArgument(1)] VentilationSystem.Operation op, [HarmonyArgument(2)] byte ventId, [HarmonyArgument(3)] SequenceBuffer<VentilationSystem.VentMoveInfo> seqBuffer)
     {
         if (!AmongUsClient.Instance.AmHost) return true;
-        if (Utils.GetPlayerById(playerId) == null) return true;
+        if (!Utils.GetPlayerById(playerId)) return true;
+
         switch (op)
         {
             case VentilationSystem.Operation.Move:
@@ -431,187 +552,286 @@ static class PerformVentOpPatch
     }
 }
 
-[HarmonyPatch(typeof(ShipStatus), nameof(ShipStatus.Serialize))]
-static class ShipStatusSerializePatch
+[HarmonyPatch(typeof(VentilationSystem), nameof(VentilationSystem.IsVentCurrentlyBeingCleaned))]
+internal static class VentSystemIsVentCurrentlyBeingCleanedPatch
 {
-    public static void Prefix(ShipStatus __instance, [HarmonyArgument(1)] bool initialState)
+    // Patch block use vent for host becouse host always skips RpcSerializeVent
+    public static bool Prefix([HarmonyArgument(0)] int id, ref bool __result)
+    {
+        if (!AmongUsClient.Instance.AmHost) return true;
+
+        if (!PlayerControl.LocalPlayer.CanUseVent(id))
+        {
+            __result = true;
+            return false;
+        }
+
+        return true;
+    }
+}
+
+[HarmonyPatch(typeof(ShipStatus), nameof(ShipStatus.Serialize))]
+internal static class ShipStatusSerializePatch
+{
+    public static void Prefix(ShipStatus __instance, [HarmonyArgument(0)] MessageWriter writer, [HarmonyArgument(1)] bool initialState)
     {
         if (!AmongUsClient.Instance.AmHost) return;
         if (initialState) return;
+        if (SubmergedCompatibility.IsSubmerged()) return;
 
-        var cancel = Main.AllPlayerControls.Any(VentilationSystemDeterioratePatch.BlockVentInteraction);
-        var ventilationSystem = __instance.Systems[SystemTypes.Ventilation].Cast<VentilationSystem>();
+        var cancel = false;
 
+        foreach (PlayerControl pc in PlayerControl.AllPlayerControls)
+        {
+            if (VentilationSystemDeterioratePatch.BlockVentInteraction(pc))
+                cancel = true;
+        }
+
+        var hudOverrideSystem = ShipStatusSystem.HudOverrideSystemType;
+        if (Options.CurrentGameMode == CustomGameMode.Standard && hudOverrideSystem is { IsDirty: true })
+        {
+            SerializeHudOverrideSystemV2(hudOverrideSystem);
+            hudOverrideSystem.IsDirty = false;
+        }
+
+        var hqHudSystem = ShipStatusSystem.HqHudSystemType;
+        if (Options.CurrentGameMode == CustomGameMode.Standard && hqHudSystem is { IsDirty: true })
+        {
+            SerializeHqHudSystemV2(hqHudSystem);
+            hqHudSystem.IsDirty = false;
+        }
+
+        var ventilationSystem = ShipStatusSystem.VentilationSystem;
         if (cancel && ventilationSystem is { IsDirty: true })
         {
             Utils.SetAllVentInteractions();
             ventilationSystem.IsDirty = false;
         }
     }
-}
 
-[HarmonyPatch(typeof(VentilationSystem), nameof(VentilationSystem.Deteriorate))]
-static class VentilationSystemDeterioratePatch
-{
-    public static Dictionary<byte, int> LastClosestVent = [];
-    private static readonly Dictionary<byte, bool> LastCanUseVent = [];
-
-    public static void Postfix(VentilationSystem __instance)
+    private static void SerializeHudOverrideSystemV2(HudOverrideSystemType __instance)
     {
-        if (!AmongUsClient.Instance.AmHost) return;
-        if (!GameStates.InGame) return;
-        foreach (var pc in Main.AllPlayerControls)
+        foreach (PlayerControl pc in PlayerControl.AllPlayerControls)
         {
-            if (BlockVentInteraction(pc))
+            if (pc.IsRoleBlocked()) continue;
+            
+            DataFlagRateLimiter.Enqueue(() =>
             {
-                int players = 0;
-                foreach (var playerInfo in GameData.Instance.AllPlayers)
-                {
-                    if (playerInfo != null && !playerInfo.Disconnected)
-                        ++players;
-                }
-
-                if (pc.GetClosestVent().Id == LastClosestVent[pc.PlayerId] && players >= 3) continue;
-                LastClosestVent[pc.PlayerId] = pc.GetClosestVent().Id;
-                MessageWriter writer = MessageWriter.Get();
+                MessageWriter writer = MessageWriter.Get(SendOption.Reliable);
                 writer.StartMessage(6);
                 writer.Write(AmongUsClient.Instance.GameId);
-                writer.WritePacked(pc.GetClientId());
+                writer.WritePacked(pc.OwnerId);
                 writer.StartMessage(1);
                 writer.WritePacked(ShipStatus.Instance.NetId);
-                writer.StartMessage((byte)SystemTypes.Ventilation);
-                int vents = ShipStatus.Instance.AllVents.Count(vent => !pc.CanUseVent(vent.Id));
-                List<NetworkedPlayerInfo> AllPlayers = [];
-                foreach (var playerInfo in GameData.Instance.AllPlayers)
-                {
-                    if (playerInfo != null && !playerInfo.Disconnected)
-                        AllPlayers.Add(playerInfo);
-                }
-
-                int maxVents = Math.Min(vents, AllPlayers.Count);
-                int blockedVents = 0;
-                writer.WritePacked(maxVents);
-                foreach (var vent in pc.GetVentsFromClosest())
-                {
-                    if (!pc.CanUseVent(vent.Id))
-                    {
-                        writer.Write(AllPlayers[blockedVents].PlayerId);
-                        writer.Write((byte)vent.Id);
-                        ++blockedVents;
-                    }
-
-                    if (blockedVents >= maxVents)
-                        break;
-                }
-
-                writer.WritePacked(__instance.PlayersInsideVents.Count);
-                foreach (Il2CppSystem.Collections.Generic.KeyValuePair<byte, byte> keyValuePair2 in __instance.PlayersInsideVents)
-                {
-                    writer.Write(keyValuePair2.Key);
-                    writer.Write(keyValuePair2.Value);
-                }
-
-                writer.EndMessage();
-                writer.EndMessage();
-                writer.EndMessage();
-                AmongUsClient.Instance.SendOrDisconnect(writer);
-                writer.Recycle();
-            }
-        }
-    }
-
-    public static bool BlockVentInteraction(PlayerControl pc)
-    {
-        return !pc.AmOwner && !pc.IsModClient() && !pc.Data.IsDead && (pc.IsImpostor() || pc.GetRoleTypes() is RoleTypes.Engineer or RoleTypes.Impostor or RoleTypes.Shapeshifter or RoleTypes.Phantom) && ShipStatus.Instance.AllVents.Any(vent => !pc.CanUseVent(vent.Id));
-    }
-
-    public static void SerializeV2(VentilationSystem __instance, PlayerControl player = null)
-    {
-        foreach (var pc in Main.AllPlayerControls)
-        {
-            if (pc.AmOwner) continue;
-            if (player != null && pc != player) continue;
-            if (BlockVentInteraction(pc))
-            {
-                MessageWriter writer = MessageWriter.Get();
-                writer.StartMessage(6);
-                writer.Write(AmongUsClient.Instance.GameId);
-                writer.WritePacked(pc.GetClientId());
-                writer.StartMessage(1);
-                writer.WritePacked(ShipStatus.Instance.NetId);
-                writer.StartMessage((byte)SystemTypes.Ventilation);
-                int vents = ShipStatus.Instance.AllVents.Count(vent => !pc.CanUseVent(vent.Id));
-                List<NetworkedPlayerInfo> AllPlayers = [];
-                foreach (var playerInfo in GameData.Instance.AllPlayers)
-                {
-                    if (playerInfo != null && !playerInfo.Disconnected)
-                        AllPlayers.Add(playerInfo);
-                }
-
-                int maxVents = Math.Min(vents, AllPlayers.Count);
-                int blockedVents = 0;
-                writer.WritePacked(maxVents);
-                foreach (var vent in pc.GetVentsFromClosest())
-                {
-                    if (!pc.CanUseVent(vent.Id))
-                    {
-                        writer.Write(AllPlayers[blockedVents].PlayerId);
-                        writer.Write((byte)vent.Id);
-                        ++blockedVents;
-                    }
-
-                    if (blockedVents >= maxVents)
-                        break;
-                }
-
-                writer.WritePacked(__instance.PlayersInsideVents.Count);
-                foreach (Il2CppSystem.Collections.Generic.KeyValuePair<byte, byte> keyValuePair2 in __instance.PlayersInsideVents)
-                {
-                    writer.Write(keyValuePair2.Key);
-                    writer.Write(keyValuePair2.Value);
-                }
-
-                writer.EndMessage();
-                writer.EndMessage();
-                writer.EndMessage();
-                AmongUsClient.Instance.SendOrDisconnect(writer);
-                writer.Recycle();
-            }
-            else
-            {
-                MessageWriter writer = MessageWriter.Get();
-                writer.StartMessage(6);
-                writer.Write(AmongUsClient.Instance.GameId);
-                writer.WritePacked(pc.GetClientId());
-                writer.StartMessage(1);
-                writer.WritePacked(ShipStatus.Instance.NetId);
-                writer.StartMessage((byte)SystemTypes.Ventilation);
+                writer.StartMessage((byte)SystemTypes.Comms);
                 __instance.Serialize(writer, false);
                 writer.EndMessage();
                 writer.EndMessage();
                 writer.EndMessage();
                 AmongUsClient.Instance.SendOrDisconnect(writer);
                 writer.Recycle();
-            }
+            });
         }
     }
 
-    public static void CheckVentInteraction(PlayerControl pc)
+    private static void SerializeHqHudSystemV2(HqHudSystemType __instance)
     {
-        if (!GameStates.IsInTask) return;
-
-        bool canUse = pc.CanUseVent();
-
-        if (!LastCanUseVent.TryGetValue(pc.PlayerId, out bool couldUse))
+        foreach (PlayerControl pc in PlayerControl.AllPlayerControls)
         {
-            LastCanUseVent[pc.PlayerId] = canUse;
-            return;
-        }
+            if (Main.AllPlayerSpeed.TryGetValue(pc.PlayerId, out float speed) && Mathf.Approximately(speed, Main.MinSpeed)) continue;
 
-        if (couldUse != canUse)
-        {
-            LastCanUseVent[pc.PlayerId] = canUse;
-            SerializeV2(ShipStatus.Instance.Systems[SystemTypes.Ventilation].Cast<VentilationSystem>(), pc);
+            DataFlagRateLimiter.Enqueue(() =>
+            {
+                MessageWriter writer = MessageWriter.Get(SendOption.Reliable);
+                writer.StartMessage(6);
+                writer.Write(AmongUsClient.Instance.GameId);
+                writer.WritePacked(pc.OwnerId);
+                writer.StartMessage(1);
+                writer.WritePacked(ShipStatus.Instance.NetId);
+                writer.StartMessage((byte)SystemTypes.Comms);
+                __instance.Serialize(writer, false);
+                writer.EndMessage();
+                writer.EndMessage();
+                writer.EndMessage();
+                AmongUsClient.Instance.SendOrDisconnect(writer);
+                writer.Recycle();
+            });
         }
+    }
+}
+
+[HarmonyPatch(typeof(VentilationSystem), nameof(VentilationSystem.Deteriorate))]
+internal static class VentilationSystemDeterioratePatch
+{
+    public static bool BlockVentInteraction(PlayerControl pc)
+    {
+        try
+        {
+            if (!ShipStatus.Instance || pc.PlayerId >= 254) return false;
+            if (!pc.AmOwner && !pc.IsModdedClient() && !pc.Data.IsDead && pc.GetRoleTypes() is RoleTypes.Engineer or RoleTypes.Impostor or RoleTypes.Shapeshifter or RoleTypes.Phantom)
+            {
+                var vents = ShipStatus.Instance.AllVents;
+                for (int i = 0; i < vents.Count; i++)
+                    if (!pc.CanUseVent(vents[i].Id)) return true;
+            }
+            return false;
+        }
+        catch (Exception e)
+        {
+            Utils.ThrowException(e);
+            return false;
+        }
+    }
+
+    public static void SerializeV2(VentilationSystem __instance, PlayerControl player = null)
+    {
+        foreach (PlayerControl pc in PlayerControl.AllPlayerControls)
+        {
+            if (pc.AmOwner) continue;
+            if (player && pc != player) continue;
+
+            DataFlagRateLimiter.Enqueue(() =>
+            {
+                MessageWriter writer = MessageWriter.Get(SendOption.Reliable);
+
+                if (BlockVentInteraction(pc))
+                {
+                    writer.StartMessage(6);
+                    writer.Write(AmongUsClient.Instance.GameId);
+                    writer.WritePacked(pc.OwnerId);
+                    writer.StartMessage(1);
+                    writer.WritePacked(ShipStatus.Instance.NetId);
+                    writer.StartMessage((byte)SystemTypes.Ventilation);
+                    int vents = ShipStatus.Instance.AllVents.Count(vent => !pc.CanUseVent(vent.Id));
+                    List<NetworkedPlayerInfo> allPlayers = [];
+
+                    foreach (NetworkedPlayerInfo playerInfo in GameData.Instance.AllPlayers)
+                    {
+                        if (playerInfo && !playerInfo.Disconnected)
+                            allPlayers.Add(playerInfo);
+                    }
+
+                    int maxVents = Math.Min(vents, allPlayers.Count);
+                    var blockedVents = 0;
+                    writer.WritePacked(maxVents);
+
+                    foreach (Vent vent in pc.GetVentsFromClosest())
+                    {
+                        if (!pc.CanUseVent(vent.Id))
+                        {
+                            writer.Write(allPlayers[blockedVents].PlayerId);
+                            writer.Write((byte)vent.Id);
+                            ++blockedVents;
+                        }
+
+                        if (blockedVents >= maxVents)
+                            break;
+                    }
+
+                    writer.WritePacked(__instance.PlayersInsideVents.Count);
+
+                    foreach (Il2CppSystem.Collections.Generic.KeyValuePair<byte, byte> keyValuePair2 in __instance.PlayersInsideVents)
+                    {
+                        writer.Write(keyValuePair2.Key);
+                        writer.Write(keyValuePair2.Value);
+                    }
+
+                    writer.EndMessage();
+                    writer.EndMessage();
+                    writer.EndMessage();
+                }
+                else
+                {
+                    writer.StartMessage(6);
+                    writer.Write(AmongUsClient.Instance.GameId);
+                    writer.WritePacked(pc.OwnerId);
+                    writer.StartMessage(1);
+                    writer.WritePacked(ShipStatus.Instance.NetId);
+                    writer.StartMessage((byte)SystemTypes.Ventilation);
+                    __instance.Serialize(writer, false);
+                    writer.EndMessage();
+                    writer.EndMessage();
+                    writer.EndMessage();
+                }
+
+                AmongUsClient.Instance.SendOrDisconnect(writer);
+                writer.Recycle();
+            });
+        }
+    }
+}
+
+//[HarmonyPatch(typeof(ShipStatus), nameof(ShipStatus.FixedUpdate))]
+internal static class ShipStatusFixedUpdatePatch
+{
+    public static Dictionary<byte, int> ClosestVent = [];
+    public static Dictionary<byte, bool> CanUseClosestVent = [];
+
+    private static Stopwatch Stopwatch;
+
+    public static IEnumerator Postfix()
+    {
+        Stopwatch = Stopwatch.StartNew();
+        
+        while (ShipStatus.Instance)
+        {
+            if (ReportDeadBodyPatch.MeetingStarted || GameStates.IsMeeting || ExileController.Instance || AntiBlackout.SkipTasks)
+            {
+                Stopwatch.Reset();
+                yield return new WaitForSecondsRealtime(AntiBlackout.SkipTasks ? 2f : 5f);
+                Stopwatch.Start();
+                continue;
+            }
+
+            VentilationSystem ventilationSystem = ShipStatusSystem.VentilationSystem;
+            if (ventilationSystem == null)
+            {
+                Stopwatch.Reset();
+                yield return new WaitForSecondsRealtime(0.1f);
+                Stopwatch.Start();
+                continue;
+            }
+
+            // Better use "for" loop in Coroutine instead of "foreach" loop to prevent exception
+            List<PlayerControl> players = Main.CachedAlivePlayerControls();
+            for (int pcIndex = 0; pcIndex < players.Count; pcIndex++)
+            {
+                try
+                {
+                    PlayerControl pc = players[pcIndex];
+                    Vent closestVent = pc.GetClosestVent();
+                    int ventId = closestVent.Id;
+                    bool canUseVent = pc.CanUseVent(ventId);
+
+                    if (!ClosestVent.TryGetValue(pc.PlayerId, out int lastVentId) || !CanUseClosestVent.TryGetValue(pc.PlayerId, out bool lastCanUseVent))
+                    {
+                        ClosestVent[pc.PlayerId] = ventId;
+                        CanUseClosestVent[pc.PlayerId] = canUseVent;
+                        continue;
+                    }
+
+                    if (ventId != lastVentId || canUseVent != lastCanUseVent)
+                        VentilationSystemDeterioratePatch.SerializeV2(ventilationSystem, pc);
+
+                    ClosestVent[pc.PlayerId] = ventId;
+                    CanUseClosestVent[pc.PlayerId] = canUseVent;
+                }
+                catch (Exception e) { Utils.ThrowException(e); }
+                
+                if (Stopwatch.ElapsedMilliseconds > 3)
+                {
+                    Stopwatch.Reset();
+                    yield return null;
+                    Stopwatch.Start();
+                }
+            }
+
+            Stopwatch.Reset();
+            yield return new WaitForSecondsRealtime(1f);
+            Stopwatch.Start();
+        }
+        
+        if (ShipStatus.Instance)
+            Main.Instance.StartCoroutine(Postfix());
     }
 }

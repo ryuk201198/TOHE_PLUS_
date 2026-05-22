@@ -1,11 +1,11 @@
-using System;
 using AmongUs.GameOptions;
 using HarmonyLib;
+using UnityEngine;
 
 namespace EHR;
 
 [HarmonyPatch(typeof(TaskAdderGame), nameof(TaskAdderGame.ShowFolder))]
-static class ShowFolderPatch
+internal static class ShowFolderPatch
 {
     private static TaskFolder CustomRolesFolder;
 
@@ -17,6 +17,7 @@ static class ShowFolderPatch
                 __instance.RootFolderPrefab,
                 __instance.transform
             );
+
             rolesFolder.gameObject.SetActive(false);
             rolesFolder.FolderName = Main.ModName;
             CustomRolesFolder = rolesFolder;
@@ -27,24 +28,29 @@ static class ShowFolderPatch
     public static void Postfix(TaskAdderGame __instance, [HarmonyArgument(0)] TaskFolder taskFolder)
     {
         Logger.Info("Opened " + taskFolder.FolderName, "TaskFolder");
-        float xCursor = 0f;
-        float yCursor = 0f;
-        float maxHeight = 0f;
+        var xCursor = 0f;
+        var yCursor = 0f;
+        var maxHeight = 0f;
+
         if (CustomRolesFolder != null && CustomRolesFolder.FolderName == taskFolder.FolderName)
         {
-            var list = Enum.GetValues<CustomRoles>();
-            foreach (var cRoleID in list)
+            CustomRoles[] list = Main.CustomRoleValues;
+
+            foreach (CustomRoles cRoleID in list)
             {
                 TaskAddButton button = Object.Instantiate(__instance.RoleButton);
                 button.Text.text = Utils.GetRoleName(cRoleID);
                 __instance.AddFileAsChild(CustomRolesFolder, button, ref xCursor, ref yCursor, ref maxHeight);
+
+                // ReSharper disable once Unity.IncorrectMonoBehaviourInstantiation
                 var roleBehaviour = new RoleBehaviour
                 {
                     Role = (RoleTypes)cRoleID + 1000
                 };
+
                 button.Role = roleBehaviour;
 
-                var roleColor = Utils.GetRoleColor(cRoleID);
+                Color roleColor = Utils.GetRoleColor(cRoleID);
 
                 button.FileImage.color = roleColor;
                 button.RolloverHandler.OutColor = roleColor;
@@ -55,7 +61,7 @@ static class ShowFolderPatch
 }
 
 [HarmonyPatch(typeof(TaskAddButton), nameof(TaskAddButton.Update))]
-class TaskAddButtonUpdatePatch
+internal class TaskAddButtonUpdatePatch
 {
     public static bool Prefix(TaskAddButton __instance)
     {
@@ -63,21 +69,19 @@ class TaskAddButtonUpdatePatch
         {
             if ((int)__instance.Role.Role >= 1000)
             {
-                var PlayerCustomRole = PlayerControl.LocalPlayer.GetCustomRole();
-                CustomRoles FileCustomRole = (CustomRoles)__instance.Role.Role - 1000;
-                __instance.Overlay.enabled = PlayerCustomRole == FileCustomRole;
+                CustomRoles playerCustomRole = PlayerControl.LocalPlayer.GetCustomRole();
+                CustomRoles fileCustomRole = (CustomRoles)__instance.Role.Role - 1000;
+                __instance.Overlay.enabled = playerCustomRole == fileCustomRole;
             }
         }
-        catch
-        {
-        }
+        catch { }
 
         return true;
     }
 }
 
 [HarmonyPatch(typeof(TaskAddButton), nameof(TaskAddButton.AddTask))]
-static class AddTaskButtonPatch
+internal static class AddTaskButtonPatch
 {
     public static bool Prefix(TaskAddButton __instance)
     {
@@ -91,9 +95,7 @@ static class AddTaskButtonPatch
                 return false;
             }
         }
-        catch
-        {
-        }
+        catch { }
 
         return true;
     }

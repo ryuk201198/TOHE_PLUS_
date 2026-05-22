@@ -9,12 +9,19 @@ public class StringOptionItem(int id, string name, IList<string> selections, int
     public readonly IList<string> Selections = selections;
 
     // Getter
-    public override int GetInt() => Rule.GetValueByIndex(CurrentValue);
-    public override float GetFloat() => Rule.GetValueByIndex(CurrentValue);
+    public override int GetInt()
+    {
+        return Rule.GetValueByIndex(CurrentValue);
+    }
+
+    public override float GetFloat()
+    {
+        return Rule.GetValueByIndex(CurrentValue);
+    }
 
     public override string GetString()
     {
-        var str = Selections[Rule.GetValueByIndex(CurrentValue)];
+        string str = Selections[Rule.GetValueByIndex(CurrentValue)];
         return noTranslation ? str : Translator.GetString(str);
     }
 
@@ -30,14 +37,17 @@ public class StringOptionItem(int id, string name, IList<string> selections, int
                 return CurrentValue;
             // For 0% to 100% or 5% to 100%
             default:
-                var offset = Options.Rates.Length - Selections.Count;
-                var index = CurrentValue + offset;
-                var rate = index * 5;
+                int offset = Options.Rates.Length - Selections.Count;
+                int index = CurrentValue + offset;
+                int rate = index * 5;
                 return rate;
         }
     }
 
-    public override int GetValue() => Rule.RepeatIndex(base.GetValue());
+    public override int GetValue()
+    {
+        return Rule.RepeatIndex(base.GetValue());
+    }
 
     // Setter
     public override void SetValue(int value, bool doSync = true)

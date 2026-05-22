@@ -1,140 +1,71 @@
-﻿using EHR.Patches;
+﻿using System.Linq;
+using EHR.Patches;
 using HarmonyLib;
-using UnityEngine;
+using Il2CppSystem;
+using Exception = System.Exception;
 
 namespace EHR;
 
+// Thanks: https://github.com/AU-Avengers/TOU-Mira/blob/main/TownOfUs/Patches/AprilFools/DleksMapOptionPickerPatches.cs
 [HarmonyPatch(typeof(GameStartManager))]
-class AllMapIconsPatch
+internal static class AllMapIconsPatch
 {
-    [HarmonyPatch(nameof(GameStartManager.Start)), HarmonyPostfix]
+    [HarmonyPatch(typeof(GameStartManager), nameof(GameStartManager.Start))]
+    [HarmonyPriority(Priority.First)]
+    [HarmonyPrefix]
+    public static void GameStartManagerStart_Prefix(GameStartManager __instance)
+    {
+        if (__instance.AllMapIcons.TrueForAll((Predicate<MapIconByName>)(x => x.Name != MapNames.Dleks)))
+        {
+            __instance.AllMapIcons.Insert((int)MapNames.Dleks, new MapIconByName
+            {
+                Name = MapNames.Dleks,
+                MapIcon = Utils.LoadSprite("EHR.Resources.Images.DleksBanner-Wordart.png", 160f)
+            });
+        }
+        if (SubmergedCompatibility.Loaded)
+        {
+            if (__instance.AllMapIcons.TrueForAll((Predicate<MapIconByName>)(x => x.Name != (MapNames)6)))
+            {
+                __instance.AllMapIcons.Insert((int)(MapNames)6, new MapIconByName
+                {
+                    Name = (MapNames)6,
+                    MapIcon = Utils.LoadSprite("EHR.Resources.Images.Submerged-Wordart.png", 380f)
+                });
+            }
+        }
+    }
+    [HarmonyPatch(nameof(GameStartManager.Start))]
+    [HarmonyPostfix]
     public static void Postfix_AllMapIcons(GameStartManager __instance)
     {
-        if (__instance == null) return;
-
-        if (Main.NormalOptions.MapId == 3)
+        try
         {
-            Main.NormalOptions.MapId = 0;
-            __instance.UpdateMapImage(MapNames.Skeld);
+            if (!__instance) return;
 
-            if (!Options.RandomMapsMode.GetBool())
-                CreateOptionsPickerPatch.SetDleks = true;
+            LateTask.New(() =>
+            {
+                if (Main.NormalOptions.MapId == 3)
+                {
+                    Main.NormalOptions.MapId = 0;
+                    __instance.UpdateMapImage(MapNames.Skeld);
+
+                    if (!Options.RandomMapsMode.GetBool()) GameOptionsMapPickerPatch.SetDleks = true;
+                }
+            }, AmongUsClient.Instance.AmHost ? 1f : 4f, "Set Skeld Icon For Dleks Map");
         }
-
-        MapIconByName dleksIcon = Object.Instantiate(__instance, __instance.gameObject.transform).AllMapIcons[0];
-        dleksIcon.Name = MapNames.Dleks;
-        dleksIcon.MapImage = Utils.LoadSprite("EHR.Resources.Images.DleksBanner.png", 100f);
-        dleksIcon.NameImage = Utils.LoadSprite("EHR.Resources.Images.DleksBanner-Wordart.png", 100f);
-        __instance.AllMapIcons.Add(dleksIcon);
+        catch (Exception e) { Utils.ThrowException(e); }
     }
-}
-
-[HarmonyPatch(typeof(AmongUsClient._CoStartGameHost_d__32), nameof(AmongUsClient._CoStartGameHost_d__32.MoveNext))]
-public static class DleksPatch
-{
-    public static bool Prefix(AmongUsClient._CoStartGameHost_d__32 __instance, ref bool __result)
+    [HarmonyPatch(typeof(GameStartManager), nameof(GameStartManager.UpdateMapImage))]
+    [HarmonyPrefix]
+    public static bool Prefix_UpdateMapImage(GameStartManager __instance)
     {
-        if (__instance.__1__state != 0)
+        if (GameOptionsMapPickerPatch.SetDleks)
         {
-            return true;
-        }
-
-        __instance.__1__state = -1;
-        if (LobbyBehaviour.Instance)
-        {
-            LobbyBehaviour.Instance.Despawn();
-        }
-
-        if (ShipStatus.Instance)
-        {
-            __instance.__2__current = null;
-            __instance.__1__state = 2;
-            __result = true;
+            __instance.MapImage.sprite = Utils.LoadSprite("EHR.Resources.Images.DleksBanner-Wordart.png", 160f);
             return false;
         }
-
-        // removed dleks check as it's always false
-        var num2 = Mathf.Clamp(GameOptionsManager.Instance.CurrentGameOptions.MapId, 0, Constants.MapNames.Length - 1);
-        __instance.__2__current = __instance.__4__this.ShipLoadingAsyncHandle = __instance.__4__this.ShipPrefabs[num2].InstantiateAsync();
-        __instance.__1__state = 1;
-
-        __result = true;
-        return false;
-    }
-}
-
-[HarmonyPatch(typeof(Vent), nameof(Vent.SetButtons))]
-public static class VentSetButtonsPatch
-{
-    public static bool ShowButtons;
-
-    // Fix arrows buttons in vent on Dleks map and "Index was outside the bounds of the array" errors
-    private static bool Prefix( /*Vent __instance,*/ [HarmonyArgument(0)] ref bool enabled)
-    {
-        if (Main.CurrentMap == MapNames.Dleks && Main.IntroDestroyed)
-        {
-            enabled = false;
-            if (GameStates.IsMeeting)
-                ShowButtons = false;
-        }
-
         return true;
-    }
-
-    public static void Postfix(Vent __instance, [HarmonyArgument(0)] bool enabled)
-    {
-        if (Main.CurrentMap != MapNames.Dleks) return;
-        if (enabled || !Main.IntroDestroyed) return;
-
-        var setActive = ShowButtons || !PlayerControl.LocalPlayer.inVent && !GameStates.IsMeeting;
-        switch (__instance.Id)
-        {
-            case 0:
-            case 1:
-            case 2:
-            case 3:
-            case 5:
-            case 6:
-                __instance.Buttons[0].gameObject.SetActive(setActive);
-                __instance.Buttons[1].gameObject.SetActive(setActive);
-                break;
-            case 7:
-            case 12:
-            case 13:
-                __instance.Buttons[0].gameObject.SetActive(setActive);
-                break;
-            case 4:
-            case 8:
-            case 9:
-            case 10:
-            case 11:
-                __instance.Buttons[1].gameObject.SetActive(setActive);
-                break;
-        }
-    }
-}
-
-[HarmonyPatch(typeof(Vent), nameof(Vent.TryMoveToVent))]
-class VentTryMoveToVentPatch
-{
-    // Update arrows buttons when player move to vents
-    private static void Postfix(Vent __instance, [HarmonyArgument(0)] Vent otherVent)
-    {
-        if (__instance == null || otherVent == null || Main.CurrentMap != MapNames.Dleks) return;
-
-        VentSetButtonsPatch.ShowButtons = true;
-        VentSetButtonsPatch.Postfix(otherVent, false);
-        VentSetButtonsPatch.ShowButtons = false;
-    }
-}
-
-[HarmonyPatch(typeof(Vent), nameof(Vent.UpdateArrows))]
-class VentUpdateArrowsPatch
-{
-    // Fixes "Index was outside the bounds of the array" errors when arrows updates in vent on Dleks map
-    private static bool Prefix()
-    {
-        return Main.CurrentMap != MapNames.Dleks;
     }
 }
 
@@ -147,6 +78,55 @@ public static class AutoselectDleksPatch
         {
             // vanilla clamps this to not autoselect dleks
             __instance.Value = GameOptionsManager.Instance.CurrentGameOptions.MapId;
+        }
+    }
+}
+
+[HarmonyPatch]
+public static class CreateGameOptionsPatch
+{
+    [HarmonyPatch(typeof(CreateGameOptions), nameof(CreateGameOptions.MapChanged))]
+    [HarmonyPrefix]
+    public static bool MapChangedPrefix(CreateGameOptions __instance)
+    {
+        if (__instance.mapPicker.GetSelectedID() == (int)MapNames.Dleks)
+        {
+            __instance.mapBanner.flipX = false;
+            __instance.rendererBGCrewmates.sprite = __instance.bgCrewmates[0];
+            __instance.mapBanner.sprite = Utils.LoadSprite("EHR.Resources.Images.DleksBanner-Wordart.png", 100f);
+            __instance.TurnOffCrewmates();
+            __instance.currentCrewSprites = __instance.skeldCrewSprites;
+            __instance.SetCrewmateGraphic(__instance.capacityOption.Value - 1f);
+            return false;
+        }
+        return !SubmergedCompatibility.Loaded || __instance.mapPicker.GetSelectedID() != 6;
+    }
+    [HarmonyPatch(typeof(CreateGameOptions), nameof(CreateGameOptions.Start))]
+    [HarmonyPrefix]
+    public static void SetupMapBackground(CreateGameOptions __instance)
+    {
+        if (__instance.currentCrewSprites == null)
+        {
+            __instance.mapBanner.sprite = Utils.LoadSprite("EHR.Resources.Images.DleksBanner-Wordart.png", 100f);
+        }
+        __instance.currentCrewSprites ??= __instance.skeldCrewSprites;
+        __instance.mapTooltips[3] = StringNames.ToolTipSkeld;
+    }
+}
+
+[HarmonyPatch]
+public static class MapSelectionGameSettingPatch
+{
+    [HarmonyPriority(Priority.VeryLow)]
+    [HarmonyPatch(typeof(MapSelectionGameSetting), nameof(MapSelectionGameSetting.GetValueString))]
+    [HarmonyPrefix]
+    public static void AddToActualOptions(MapSelectionGameSetting __instance)
+    {
+        if (__instance.Values.All(x => (int)x != (int)StringNames.MapNameSkeld))
+        {
+            var list = __instance.Values.ToList();
+            list.Insert((int)MapNames.Dleks, StringNames.MapNameSkeld);
+            __instance.Values = list.ToArray();
         }
     }
 }

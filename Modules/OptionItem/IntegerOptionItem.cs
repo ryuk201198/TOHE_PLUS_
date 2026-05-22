@@ -5,10 +5,25 @@ public class IntegerOptionItem(int id, string name, IntegerValueRule rule, int d
     public readonly IntegerValueRule Rule = rule;
 
     // Getter
-    public override int GetInt() => Rule.GetValueByIndex(CurrentValue);
-    public override float GetFloat() => Rule.GetValueByIndex(CurrentValue);
-    public override string GetString() => ApplyFormat(Rule.GetValueByIndex(CurrentValue).ToString());
-    public override int GetValue() => Rule.RepeatIndex(base.GetValue());
+    public override int GetInt()
+    {
+        return Rule.GetValueByIndex(CurrentValue);
+    }
+
+    public override float GetFloat()
+    {
+        return Rule.GetValueByIndex(CurrentValue);
+    }
+
+    public override string GetString()
+    {
+        return ApplyFormat(Rule.GetValueByIndex(CurrentValue).ToString());
+    }
+
+    public override int GetValue()
+    {
+        return Rule.RepeatIndex(base.GetValue());
+    }
 
     // Setter
     public override void SetValue(int value, bool doSync = true)

@@ -4,36 +4,50 @@ using Hazel;
 namespace EHR;
 
 [HarmonyPatch(typeof(GameManager), nameof(GameManager.Serialize))]
-class GameManagerSerializeFix
+internal static class GameManagerSerializeFix
 {
+    public static bool InitialState = true;
+
     public static bool Prefix(GameManager __instance, [HarmonyArgument(0)] MessageWriter writer, [HarmonyArgument(1)] bool initialState, ref bool __result)
     {
-        bool flag = false;
-        for (int index = 0; index < __instance.LogicComponents.Count; ++index)
+        InitialState = initialState;
+
+        var flag = false;
+
+        for (var index = 0; index < __instance.LogicComponents.Count; ++index)
         {
             GameLogicComponent logicComponent = __instance.LogicComponents[index];
+
             if (initialState || logicComponent.IsDirty)
             {
-                flag = true;
                 writer.StartMessage((byte)index);
-                var hasBody = logicComponent.Serialize(writer, initialState);
-                if (hasBody) writer.EndMessage();
-                else writer.CancelMessage();
+                bool hasBody = logicComponent.Serialize(writer);
+
+                if (hasBody)
+                {
+                    flag = true;
+                    writer.EndMessage();
+                }
+                else
+                    writer.CancelMessage();
+
                 logicComponent.ClearDirtyFlag();
             }
         }
+
         __instance.ClearDirtyBits();
         __result = flag;
         return false;
     }
 }
-[HarmonyPatch(typeof(LogicOptions), nameof(LogicOptions.Serialize))]
-class LogicOptionsSerializePatch
+
+[HarmonyPatch(typeof(LogicOptions), nameof(LogicOptions.Serialize))] // Only called by the patch above
+internal static class LogicOptionsSerializePatch
 {
-    public static bool Prefix(ref bool __result, /*MessageWriter writer,*/ bool initialState)
+    public static bool Prefix(ref bool __result)
     {
         // Block all but the first time and synchronize only with CustomSyncSettings
-        if (!initialState)
+        if (!GameManagerSerializeFix.InitialState)
         {
             __result = false;
             return false;

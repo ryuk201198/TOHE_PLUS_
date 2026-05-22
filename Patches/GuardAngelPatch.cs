@@ -1,6 +1,7 @@
 ﻿using HarmonyLib;
 
 namespace EHR;
+
 internal class GuardAngelPatch
 {
     [HarmonyPatch(typeof(MeetingIntroAnimation), nameof(MeetingIntroAnimation.Start))]

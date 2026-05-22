@@ -26,7 +26,7 @@ public interface IRandom
     // == static ==
 
     /// <summary>
-    /// Generates a sequence of random numbers.
+    ///     Generates a sequence of random numbers.
     /// </summary>
     /// <param name="count">The number of random numbers to generate.</param>
     /// <param name="minValue">The inclusive lower bound of the random numbers to generate.</param>
@@ -34,14 +34,11 @@ public interface IRandom
     /// <returns>A sequence of random numbers.</returns>
     public static IEnumerable<int> Sequence(int count, int minValue, int maxValue)
     {
-        for (int i = 0; i < count; i++)
-        {
-            yield return Instance.Next(minValue, maxValue);
-        }
+        for (var i = 0; i < count; i++) yield return Instance.Next(minValue, maxValue);
     }
 
     /// <summary>
-    /// Generates a sequence of unique random numbers.
+    ///     Generates a sequence of unique random numbers.
     /// </summary>
     /// <param name="count">The number of random numbers to generate.</param>
     /// <param name="minValue">The inclusive lower bound of the random numbers to generate.</param>
@@ -50,33 +47,35 @@ public interface IRandom
     public static IEnumerable<int> SequenceUnique(int count, int minValue, int maxValue)
     {
         var set = new HashSet<int>();
-        for (int i = 0; i < count; i++)
+
+        for (var i = 0; i < count; i++)
         {
             // If all possible values are used, the loop will be infinite. Break the loop if the set is full.
             if (set.Count == maxValue - minValue) break;
+
             int value;
-            do value = Instance.Next(minValue, maxValue);
+
+            do
+                value = Instance.Next(minValue, maxValue);
             while (!set.Add(value));
+
             yield return value;
         }
     }
 
     public static void SetInstance(IRandom instance)
     {
-        if (instance != null)
-            Instance = instance;
+        if (instance != null) Instance = instance;
     }
 
     public static void SetInstanceById(int id)
     {
-        if (RandomTypes.TryGetValue(id, out var type))
+        if (RandomTypes.TryGetValue(id, out Type type))
         {
             // The current instance is null or the type of the current instance does not match the specified type.
-            if (Instance == null || Instance.GetType() != type)
-            {
-                Instance = Activator.CreateInstance(type) as IRandom ?? Instance;
-            }
+            if (Instance == null || Instance.GetType() != type) Instance = Activator.CreateInstance(type) as IRandom ?? Instance;
         }
-        else Logger.Warn($"無効なID: {id}", "IRandom.SetInstanceById");
+        else
+            Logger.Warn($"Invalid ID: {id}", "IRandom.SetInstanceById");
     }
 }

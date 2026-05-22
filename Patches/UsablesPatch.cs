@@ -1,21 +1,31 @@
 using AmongUs.GameOptions;
+using EHR.Roles;
 using HarmonyLib;
 using UnityEngine;
 
 namespace EHR;
 
 [HarmonyPatch(typeof(Console), nameof(Console.CanUse))]
-static class CanUsePatch
+internal static class CanUsePatch
 {
     public static bool Prefix( /*ref float __result,*/ Console __instance, /*[HarmonyArgument(0)] NetworkedPlayerInfo pc,*/ [HarmonyArgument(1)] out bool canUse, [HarmonyArgument(2)] out bool couldUse)
     {
         canUse = couldUse = false;
         // Even if you return this with false, usable items other than tasks will remain usable (buttons, etc.)
-        if (Main.GM.Value && GameStates.InGame) return false;
-        var lp = PlayerControl.LocalPlayer;
-        return __instance.AllowImpostor || (Utils.HasTasks(lp.Data, false) && (!lp.Is(CustomRoles.Wizard) || HasTasksAsWizard()));
+        if (Main.GM.Value && AmongUsClient.Instance.AmHost && GameStates.InGame) return false;
 
-        bool HasTasksAsWizard()
+        PlayerControl lp = PlayerControl.LocalPlayer;
+
+        return __instance.AllowImpostor || (Utils.HasTasks(lp.Data, false) && lp.GetCustomRole() switch
+        {
+            CustomRoles.Wizard or CustomRoles.Carrier => HasTasksAsDynamicTaskingRole(),
+            CustomRoles.Medic => (Options.UsePets.GetBool() && Medic.UsePet.GetBool()) || lp.GetAbilityUseLimit() < 1f,
+            CustomRoles.Duality => !((Duality)Main.PlayerStates[lp.PlayerId].Role).KillingPhase,
+            CustomRoles.Accumulator => !((Accumulator)Main.PlayerStates[lp.PlayerId].Role).Killing,
+            _ => true
+        });
+
+        bool HasTasksAsDynamicTaskingRole()
         {
             if (lp.GetTaskState().IsTaskFinished) return false;
             if (!lp.IsAlive()) return true;
@@ -25,7 +35,7 @@ static class CanUsePatch
 }
 
 [HarmonyPatch(typeof(EmergencyMinigame), nameof(EmergencyMinigame.Update))]
-static class EmergencyMinigamePatch
+internal static class EmergencyMinigamePatch
 {
     public static void Postfix(EmergencyMinigame __instance)
     {
@@ -33,10 +43,18 @@ static class EmergencyMinigamePatch
             __instance.Close();
     }
 }
-
-[HarmonyPatch(typeof(Vent), nameof(Vent.CanUse))]
-static class CanUseVentPatch
+[HarmonyPatch(typeof(Vent), nameof(Vent.Start))]
+internal static class VentStartPatch
 {
+    public static void Postfix(Vent __instance)
+    {
+        CanUseVentPatch.IUsable = __instance.TryCast<IUsable>();
+    }
+}
+[HarmonyPatch(typeof(Vent), nameof(Vent.CanUse))]
+internal static class CanUseVentPatch
+{
+    public static IUsable IUsable;
     public static bool Prefix(Vent __instance,
         [HarmonyArgument(0)] NetworkedPlayerInfo pc,
         [HarmonyArgument(1)] ref bool canUse,
@@ -44,26 +62,59 @@ static class CanUseVentPatch
         ref float __result)
     {
         PlayerControl playerControl = pc.Object;
+        var usableVent = IUsable;
 
         // First half, Mod-specific processing
 
         // Determine if vent is available based on custom role
         // always true for engineer-based roles
-        couldUse = playerControl.CanUseImpostorVentButton() || (pc.Role.Role == RoleTypes.Engineer && pc.Role.CanUse(__instance.Cast<IUsable>()));
+        couldUse = playerControl.CanUseImpostorVentButton() || (pc.Role.Role == RoleTypes.Engineer && pc.Role.CanUse(usableVent));
 
+        if (SubmergedCompatibility.IsSubmerged()) // From TheOtherRoles
+        {
+            // As submerged does, only change stuff for vents 9 and 14 of submerged. Code partially provided by AlexejheroYTB
+            if (SubmergedCompatibility.GetInTransition())
+            {
+                __result = float.MaxValue;
+                return canUse = couldUse = false;
+            }
+
+            switch (__instance.Id)
+            {
+                case 9: // Cannot enter vent 9 (Engine Room Exit Only Vent)!
+                {
+                    if (playerControl.inVent) break;
+                    __result = float.MaxValue;
+                    return canUse = couldUse = false;
+                }
+                case 14: // Lower Central
+                {
+                    __result = float.MaxValue;
+                    couldUse = couldUse && !pc.IsDead && (playerControl.CanMove || playerControl.inVent);
+                    canUse = couldUse;
+
+                    if (canUse)
+                    {
+                        Vector3 center = playerControl.Collider.bounds.center;
+                        Vector3 position = __instance.transform.position;
+                        __result = Vector2.Distance(center, position);
+                        canUse &= __result <= __instance.UsableDistance;
+                    }
+
+                    return false;
+                }
+            }
+        }
+        
         canUse = couldUse;
         // Not available if custom roles are not available
-        if (!canUse)
-        {
-            return false;
-        }
+        if (!canUse) return false;
 
         // Mod's own processing up to this point
         // Replace vanilla processing from here
 
-        IUsable usableVent = __instance.Cast<IUsable>();
         // Distance between vent and player
-        float actualDistance = float.MaxValue;
+        var actualDistance = float.MaxValue;
 
         couldUse =
             // true for classic and for vanilla HnS
@@ -75,17 +126,15 @@ static class CanUseVentPatch
             (playerControl.CanMove || playerControl.inVent);
 
         // Check vent cleaning
-        if (ShipStatus.Instance.Systems.TryGetValue(SystemTypes.Ventilation, out var systemType))
+        if (ShipStatus.Instance.Systems.ContainsKey(SystemTypes.Ventilation))
         {
-            VentilationSystem ventilationSystem = systemType.TryCast<VentilationSystem>();
+            var ventilationSystem = ShipStatusSystem.VentilationSystem;
             // If someone is cleaning a vent, you can't get into that vent
-            if (ventilationSystem != null && ventilationSystem.IsVentCurrentlyBeingCleaned(__instance.Id))
-            {
-                couldUse = false;
-            }
+            if (ventilationSystem != null && ventilationSystem.IsVentCurrentlyBeingCleaned(__instance.Id)) couldUse = false;
         }
 
         canUse = couldUse;
+
         if (canUse)
         {
             Vector3 center = playerControl.Collider.bounds.center;
